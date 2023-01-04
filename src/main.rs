@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use std::time::Duration;
 
 use bevy::{
@@ -154,7 +156,7 @@ fn setup(mut commands: Commands, windows: Res<Windows>, asset_server: Res<AssetS
     commands
         .spawn(camera_bundle)
         .insert(BloomSettings {
-            threshold: 0.9,
+            threshold: 0.8,
             intensity: 0.3,
             scale: 1.5,
             ..default()
@@ -282,22 +284,18 @@ fn world_space_cursor_position(
     return Some(world_pos.truncate());
 }
 
-fn input_system(
+fn spawn_ball_system(
     mut commands: Commands,
     mut ball_count: ResMut<BallCount>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     meshes: Res<Meshes>,
     mouse_button_input: Res<Input<MouseButton>>,
-    touch_input: Res<Touches>,
     windows: Res<Windows>,
     rapier_context: Res<RapierContext>,
     mut query_hoverball: Query<&mut Transform, With<HoverBall>>,
     query_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
 ) {
-    let cursor_position = world_space_cursor_position(windows, query_camera);
-    let touch_position = touch_input.iter_just_pressed().next().map(|t| t.position());
-
-    let Some(position) = cursor_position.or(touch_position) else {
+    let Some(position) = world_space_cursor_position(windows, query_camera) else {
         return;
     };
 
@@ -315,7 +313,7 @@ fn input_system(
         return;
     }
 
-    if mouse_button_input.pressed(MouseButton::Left) || touch_input.any_just_pressed() {
+    if mouse_button_input.pressed(MouseButton::Left) {
         commands
             .spawn(MaterialMesh2dBundle {
                 mesh: meshes.balls[0].clone(),
@@ -361,7 +359,6 @@ fn scroll_event_system(
     mut mouse_scroll_event: EventReader<MouseWheel>,
     mut query_camera: Query<&mut Transform, With<MainCamera>>,
     windows: Res<Windows>,
-    touch_input: Res<Touches>,
 ) {
     for mouse_wheel in mouse_scroll_event.iter() {
         let mut transform = query_camera.single_mut();
@@ -375,17 +372,6 @@ fn scroll_event_system(
             }
         }
 
-        clamp_camera_y(transform, windows.primary());
-        return;
-    }
-
-    for touch in touch_input.iter_just_pressed().chain(touch_input.iter_just_released()) {
-        let mut transform = query_camera.single_mut();
-
-        let difference = touch.position().y - touch.previous_position().y;
-
-        transform.translation.y += difference;
-        
         clamp_camera_y(transform, windows.primary());
         return;
     }
@@ -565,7 +551,7 @@ impl Plugin for GamePlugin {
             .add_system(text_update_system)
             .add_system(update_lerp_distance_system)
             .add_system(update_destroy_after_system)
-            .add_system(input_system);
+            .add_system(spawn_ball_system);
     }
 }
 
