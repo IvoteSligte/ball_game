@@ -5,7 +5,7 @@ use self_update::{backends::github, cargo_crate_version, Status};
 /// Updates the app, returns true if it has been updated, false if it has not.
 pub fn update_version() -> Result<bool, Box<dyn Error>> {
     let status = github::Update::configure()
-        .repo_owner("IvoteSligte")
+        .repo_owner("IvoteSligte/contents")
         .repo_name("ball_game")
         .bin_name("ball_game")
         .current_version(cargo_crate_version!())
