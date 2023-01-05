@@ -1,5 +1,7 @@
 #![windows_subsystem = "windows"]
 
+mod update_version;
+
 use std::time::Duration;
 
 use bevy::{
@@ -19,7 +21,7 @@ use bevy_tweening::{
     Animator, AssetAnimator, EaseFunction, Lens, Tracks, Tween, TweeningPlugin,
 };
 
-const WALL_WIDTH: f32 = 100.0;
+const WALL_THICKNESS: f32 = 1000.0;
 
 const BALL_MIN_VERTICES: usize = 32;
 
@@ -56,7 +58,7 @@ const BALL_RADII: [f32; 11] = [
 ];
 
 const PLAY_AREA_WIDTH: f32 = 600.0;
-const PLAY_AREA_HEIGHT: f32 = 1e20;
+const PLAY_AREA_HEIGHT: f32 = 100.0 * PLAY_AREA_WIDTH;
 
 const PIXELS_PER_LINE_SCROLLED: f32 = 20.0;
 
@@ -69,7 +71,7 @@ struct Ball {
 
 #[derive(Component)]
 /// semi-transparent ball shown when the cursor hovers over the screen
-struct HoverBall;
+struct CursorIcon;
 
 // linearly interpolates distance by changing position
 #[derive(Component)]
@@ -111,6 +113,7 @@ impl Lens<Transform> for TransformPositionZLens {
 struct DestroyAfter(Timer);
 
 #[derive(Component)]
+// used because I cannot figure out how to use Rapier's Velocity component
 /// Velocity determined by a change in position
 struct ObservedVelocity {
     prev_position: Vec2,
@@ -134,6 +137,12 @@ struct BallCount(usize);
 struct Meshes {
     balls: Vec<Mesh2dHandle>,
 }
+
+#[derive(Default, Resource)]
+struct WorldSpaceCursor(Option<Vec2>);
+
+#[derive(Default, Resource)]
+struct BallMovingTowardsCursor(Option<Entity>);
 
 fn setup(mut commands: Commands, windows: Res<Windows>, asset_server: Res<AssetServer>) {
     let window = windows.get_primary().unwrap();
@@ -183,28 +192,37 @@ fn setup(mut commands: Commands, windows: Res<Windows>, asset_server: Res<AssetS
     // left
     commands
         .spawn(Wall)
-        .insert(Collider::cuboid(WALL_WIDTH, PLAY_AREA_HEIGHT))
+        .insert(Collider::cuboid(WALL_THICKNESS, PLAY_AREA_HEIGHT))
         .insert(TransformBundle::from(Transform::from_xyz(
-            -(PLAY_AREA_WIDTH + WALL_WIDTH),
+            -(PLAY_AREA_WIDTH + WALL_THICKNESS),
             0.0,
             0.0,
         )));
     // right
     commands
         .spawn(Wall)
-        .insert(Collider::cuboid(WALL_WIDTH, PLAY_AREA_HEIGHT))
+        .insert(Collider::cuboid(WALL_THICKNESS, PLAY_AREA_HEIGHT))
         .insert(TransformBundle::from(Transform::from_xyz(
-            PLAY_AREA_WIDTH + WALL_WIDTH,
+            PLAY_AREA_WIDTH + WALL_THICKNESS,
             0.0,
             0.0,
         )));
     // bottom
     commands
         .spawn(Wall)
-        .insert(Collider::cuboid(PLAY_AREA_WIDTH, WALL_WIDTH))
+        .insert(Collider::cuboid(PLAY_AREA_WIDTH, WALL_THICKNESS))
         .insert(TransformBundle::from(Transform::from_xyz(
             0.0,
-            -WALL_WIDTH,
+            -WALL_THICKNESS,
+            0.0,
+        )));
+    // top
+    commands
+        .spawn(Wall)
+        .insert(Collider::cuboid(PLAY_AREA_WIDTH, WALL_THICKNESS))
+        .insert(TransformBundle::from(Transform::from_xyz(
+            0.0,
+            PLAY_AREA_HEIGHT + WALL_THICKNESS,
             0.0,
         )));
 }
@@ -226,7 +244,7 @@ fn setup_meshes(mut assets: ResMut<Assets<Mesh>>, mut handles: ResMut<Meshes>) {
         .collect();
 }
 
-fn setup_hoverball(
+fn setup_cursor_icon(
     mut commands: Commands,
     mut materials: ResMut<Assets<ColorMaterial>>,
     meshes: Res<Meshes>,
@@ -242,19 +260,21 @@ fn setup_hoverball(
             transform: Transform::from_scale(Vec3::splat(BALL_RADII[0] * 2.0)),
             ..default()
         })
-        .insert(HoverBall);
+        .insert(CursorIcon);
 }
 
-// https://bevy-cheatbook.github.io/cookbook/cursor2world.html
-fn world_space_cursor_position(
+// adapted from https://bevy-cheatbook.github.io/cookbook/cursor2world.html
+fn update_world_space_cursor_system(
     // need to get window dimensions
     windows: Res<Windows>,
     // query to get camera transform
-    query_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
-) -> Option<Vec2> {
+    query: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    // resource to write to
+    mut resource: ResMut<WorldSpaceCursor>,
+) {
     // get the camera info and transform
     // assuming there is exactly one main camera entity, so query::single() is OK
-    let (camera, camera_transform) = query_camera.single();
+    let (camera, camera_transform) = query.single();
 
     // get the window that the camera is displaying to (or the primary window)
     let window = if let RenderTarget::Window(id) = camera.target {
@@ -265,7 +285,8 @@ fn world_space_cursor_position(
 
     // check if the cursor is inside the window and get its position or return None
     let Some(screen_pos) = window.cursor_position() else {
-        return None;
+        resource.0 = None;
+        return;
     };
 
     // get the size of the window
@@ -281,25 +302,43 @@ fn world_space_cursor_position(
     let world_pos = ndc_to_world.project_point3(ndc.extend(-1.0));
 
     // reduce it to a 2D value
-    return Some(world_pos.truncate());
+    resource.0 = Some(world_pos.truncate());
 }
 
-fn spawn_ball_system(
+fn cursor_input_system(
     mut commands: Commands,
     mut ball_count: ResMut<BallCount>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut cursor_ball: ResMut<BallMovingTowardsCursor>,
     meshes: Res<Meshes>,
     mouse_button_input: Res<Input<MouseButton>>,
-    windows: Res<Windows>,
+    cursor_position: Res<WorldSpaceCursor>,
     rapier_context: Res<RapierContext>,
-    mut query_hoverball: Query<&mut Transform, With<HoverBall>>,
-    query_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut query_cursor_icon: Query<&mut Transform, (With<CursorIcon>, Without<Ball>)>,
+    query_balls: Query<With<Ball>>,
 ) {
-    let Some(position) = world_space_cursor_position(windows, query_camera) else {
+    let Some(position) = cursor_position.0 else {
         return;
     };
 
-    query_hoverball.single_mut().translation = position.extend(0.0);
+    query_cursor_icon.single_mut().translation = position.extend(0.0);
+
+    let mut cursor_point_intersection = None;
+    rapier_context.intersections_with_point(position, QueryFilter::default(), |e| {
+        cursor_point_intersection = Some(e);
+        false
+    });
+
+    if let Some(intersecting_entity) = cursor_point_intersection {
+        if mouse_button_input.pressed(MouseButton::Right)
+            && query_balls.contains(intersecting_entity)
+            && cursor_ball.0.is_none()
+        {
+            cursor_ball.0 = Some(intersecting_entity);
+        }
+
+        return;
+    }
 
     if rapier_context
         .intersection_with_shape(
@@ -330,16 +369,16 @@ fn spawn_ball_system(
             .insert(RigidBody::Dynamic)
             .insert(Collider::ball(0.5))
             .insert(ActiveEvents::COLLISION_EVENTS);
-        //TODO: physics restitution and stuff
 
         ball_count.0 += 1;
     }
 }
 
 fn clamp_camera_y(mut transform: Mut<Transform>, window: &Window) {
-    // limit camera y
+    // half of the camera's height
     let min = window.height() / window.width() * PLAY_AREA_WIDTH;
-    transform.translation.y = transform.translation.y.max(min);
+    let max = PLAY_AREA_HEIGHT - min;
+    transform.translation.y = transform.translation.y.clamp(min, max);
 }
 
 fn window_resize_event(
@@ -354,7 +393,6 @@ fn window_resize_event(
     }
 }
 
-// TODO: touch scrolling
 fn scroll_event_system(
     mut mouse_scroll_event: EventReader<MouseWheel>,
     mut query_camera: Query<&mut Transform, With<MainCamera>>,
@@ -380,6 +418,7 @@ fn scroll_event_system(
 fn collision_event_system(
     mut commands: Commands,
     mut ball_count: ResMut<BallCount>,
+    mut cursor_ball: ResMut<BallMovingTowardsCursor>,
     meshes: Res<Meshes>,
     mut query: Query<(
         &mut Ball,
@@ -417,8 +456,8 @@ fn collision_event_system(
                         b
                     };
 
-                let mut e1_entity = commands.entity(entity1);
-                e1_entity
+                commands
+                    .entity(entity1)
                     .remove::<Collider>()
                     .remove::<RigidBody>()
                     .insert(LerpDistance::new(
@@ -437,38 +476,44 @@ fn collision_event_system(
                 let ball_end_diameter = BALL_RADII[ball2.level] * 2.0;
                 *mesh2 = meshes.balls[ball2.level].clone();
 
-                let mut e2_entity = commands.entity(entity2);
-                e2_entity.remove::<Animator<Transform>>();
-                e2_entity.remove::<AssetAnimator<ColorMaterial>>();
-                e2_entity.insert(Animator::new(Tracks::new([
-                    Tween::new(
-                        EaseFunction::QuadraticIn,
-                        Duration::from_secs_f32(BALL_MERGE_DURATION),
-                        TransformScaleLens {
-                            start: trans2.scale,                 // INFO: do not set Z scale to 0.0
-                            end: Vec3::splat(ball_end_diameter), // doubles surface area
-                        },
-                    ),
-                    Tween::new(
-                        EaseFunction::QuadraticIn,
-                        Duration::from_secs_f32(BALL_MERGE_DURATION),
-                        TransformPositionZLens {
-                            start: (ball2.level as f32 - 1.0),
-                            end: ball2.level as f32,
-                        },
-                    ),
-                ])));
-                e2_entity.insert(AssetAnimator::new(
-                    mat2.clone(),
-                    Tween::new(
-                        EaseFunction::QuadraticIn,
-                        Duration::from_secs_f32(BALL_MERGE_DURATION),
-                        ColorMaterialColorLens {
-                            start: BALL_COLORS[ball2.level - 1],
-                            end: BALL_COLORS[ball2.level],
-                        },
-                    ),
-                ));
+                commands
+                    .entity(entity2)
+                    .remove::<Animator<Transform>>()
+                    .remove::<AssetAnimator<ColorMaterial>>()
+                    .insert(Animator::new(Tracks::new([
+                        Tween::new(
+                            EaseFunction::QuadraticIn,
+                            Duration::from_secs_f32(BALL_MERGE_DURATION),
+                            TransformScaleLens {
+                                start: trans2.scale,                 // INFO: do not set Z scale to 0.0
+                                end: Vec3::splat(ball_end_diameter), // doubles surface area
+                            },
+                        ),
+                        Tween::new(
+                            EaseFunction::QuadraticIn,
+                            Duration::from_secs_f32(BALL_MERGE_DURATION),
+                            TransformPositionZLens {
+                                start: (ball2.level as f32 - 1.0),
+                                end: ball2.level as f32,
+                            },
+                        ),
+                    ])))
+                    .insert(AssetAnimator::new(
+                        mat2.clone(),
+                        Tween::new(
+                            EaseFunction::QuadraticIn,
+                            Duration::from_secs_f32(BALL_MERGE_DURATION),
+                            ColorMaterialColorLens {
+                                start: BALL_COLORS[ball2.level - 1],
+                                end: BALL_COLORS[ball2.level],
+                            },
+                        ),
+                    ));
+
+                if Some(entity1) == cursor_ball.0 {
+                    cursor_ball.0 = Some(entity2);
+                }
+
                 return;
             }
             _ => (),
@@ -520,6 +565,28 @@ fn update_observed_velocity_system(mut query: Query<(&mut ObservedVelocity, &Tra
     }
 }
 
+fn update_move_towards_cursor_system(
+    mut rapier_context: ResMut<RapierContext>,
+    mut cursor_ball: ResMut<BallMovingTowardsCursor>,
+    cursor_position: Res<WorldSpaceCursor>,
+    mouse_button_input: Res<Input<MouseButton>>,
+    query: Query<(&RapierRigidBodyHandle, &Transform), With<Ball>>,
+) {
+    let Some((cursor_position, following_entity)) = cursor_position.0.zip(cursor_ball.0) else { return; };
+
+    if mouse_button_input.pressed(MouseButton::Right) {
+        if let Ok((handle, transform)) = query.get(following_entity) {
+            let rigidbody = rapier_context.bodies.get_mut(handle.0).unwrap();
+            rigidbody.apply_impulse(
+                (cursor_position - transform.translation.truncate()).into(),
+                true,
+            );
+        }
+    } else {
+        cursor_ball.0 = None;
+    }
+}
+
 pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
@@ -541,9 +608,11 @@ impl Plugin for GamePlugin {
 
         app.init_resource::<BallCount>()
             .init_resource::<Meshes>()
+            .init_resource::<WorldSpaceCursor>()
+            .init_resource::<BallMovingTowardsCursor>()
             .add_startup_system(setup)
             .add_startup_system(setup_meshes)
-            .add_startup_system(setup_hoverball.after(setup_meshes))
+            .add_startup_system(setup_cursor_icon.after(setup_meshes))
             .add_system(window_resize_event)
             .add_system(scroll_event_system)
             .add_system(update_observed_velocity_system)
@@ -551,11 +620,15 @@ impl Plugin for GamePlugin {
             .add_system(text_update_system)
             .add_system(update_lerp_distance_system)
             .add_system(update_destroy_after_system)
-            .add_system(spawn_ball_system);
+            .add_system(update_world_space_cursor_system)
+            .add_system(cursor_input_system.after(update_world_space_cursor_system))
+            .add_system(update_move_towards_cursor_system.after(update_world_space_cursor_system));
     }
 }
 
 fn main() {
+    update_version::update_version().unwrap();
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             window: WindowDescriptor {
