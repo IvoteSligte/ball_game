@@ -1,7 +1,5 @@
 #![windows_subsystem = "windows"]
 
-mod update_version;
-
 use std::time::Duration;
 
 use bevy::{
@@ -627,8 +625,6 @@ impl Plugin for GamePlugin {
 }
 
 fn main() {
-    update_version::update_version().unwrap();
-
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             window: WindowDescriptor {
