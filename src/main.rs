@@ -19,6 +19,7 @@ use bevy_tweening::{
     lens::{ColorMaterialColorLens, TransformScaleLens},
     Animator, AssetAnimator, EaseFunction, Lens, Tween, TweeningPlugin,
 };
+use num_bigint::BigUint;
 
 const WALL_THICKNESS: f32 = 1000.0;
 
@@ -263,6 +264,9 @@ impl Lens<Text> for TextAlphaLens {
 }
 
 #[derive(Component)]
+struct HighScoreText;
+
+#[derive(Component)]
 struct BallCountText;
 
 #[derive(Default, Resource)]
@@ -278,6 +282,9 @@ struct WorldSpaceCursor(Option<Vec2>);
 
 #[derive(Default, Resource)]
 struct BallMovingTowardsCursor(Option<Entity>);
+
+#[derive(Default, Resource)]
+struct HighScore(BigUint);
 
 fn setup(mut commands: Commands, windows: Res<Windows>, asset_server: Res<AssetServer>) {
     let window = windows.get_primary().unwrap();
@@ -317,12 +324,41 @@ fn setup(mut commands: Commands, windows: Res<Windows>, asset_server: Res<AssetS
                     color: Color::rgba(1.0, 0.84, 0.0, 0.4),
                 },
             )
+            .with_text_alignment(TextAlignment::TOP_LEFT)
             .with_style(Style {
-                position: UiRect::bottom(Val::Px(5.0)),
+                position: UiRect {
+                    top: Val::Px(0.0),
+                    left: Val::Px(3.0),
+                    ..default()
+                },
+                position_type: PositionType::Absolute,
                 ..default()
             }),
         )
         .insert(BallCountText);
+
+    commands
+        .spawn(
+            TextBundle::from_section(
+                "0",
+                TextStyle {
+                    font: asset_server.load("fonts/OpenSans-Regular.ttf"),
+                    font_size: 20.0,
+                    color: Color::rgba(1.0, 0.84, 0.0, 0.4),
+                },
+            )
+            .with_text_alignment(TextAlignment::TOP_LEFT)
+            .with_style(Style {
+                position: UiRect {
+                    top: Val::Px(0.0),
+                    right: Val::Px(4.0),
+                    ..default()
+                },
+                position_type: PositionType::Absolute,
+                ..default()
+            }),
+        )
+        .insert(HighScoreText);
 
     // left
     commands
@@ -462,7 +498,6 @@ fn cursor_input_system(
     mut ball_count: ResMut<BallCount>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut cursor_ball: ResMut<BallMovingTowardsCursor>,
-    asset_server: Res<AssetServer>,
     meshes: Res<Meshes>,
     mouse_button_input: Res<Input<MouseButton>>,
     cursor_position: Res<WorldSpaceCursor>,
@@ -506,23 +541,6 @@ fn cursor_input_system(
     }
 
     if mouse_button_input.pressed(MouseButton::Left) {
-        let text_id = commands
-            .spawn(Text2dBundle {
-                text: Text::from_section(
-                    "0",
-                    TextStyle {
-                        font: asset_server.load("fonts/VarelaRound-Regular.ttf"),
-                        font_size: *BALL_RADII.last().unwrap(),
-                        color: contrast_text_color(BALL_COLORS[0]),
-                    },
-                )
-                .with_alignment(TextAlignment::TOP_LEFT),
-                transform: Transform::from_xyz(-0.26, 0.47, 0.5)
-                    .with_scale(Vec3::splat(1.0 / *BALL_RADII.last().unwrap())),
-                ..default()
-            })
-            .id();
-
         commands
             .spawn(MaterialMesh2dBundle {
                 mesh: meshes.balls[0].clone(),
@@ -537,7 +555,6 @@ fn cursor_input_system(
             .insert(RigidBody::Dynamic)
             .insert(Collider::ball(0.5))
             .insert(ActiveEvents::COLLISION_EVENTS)
-            .add_child(text_id)
             .insert(TransformBundle::from_transform(
                 Transform::from_xyz(position.x, position.y, 0.0)
                     .with_scale(Vec3::splat(BALL_RADII[0] * 2.0)),
@@ -592,6 +609,8 @@ fn collision_event_system(
     mut commands: Commands,
     mut ball_count: ResMut<BallCount>,
     mut cursor_ball: ResMut<BallMovingTowardsCursor>,
+    mut high_score: ResMut<HighScore>,
+    asset_server: Res<AssetServer>,
     meshes: Res<Meshes>,
     mut query: Query<(
         &mut Ball,
@@ -600,8 +619,6 @@ fn collision_event_system(
         &Handle<ColorMaterial>,
         &ObservedVelocity,
     )>,
-    mut query_text: Query<&mut Text>,
-    query_children: Query<&Children>,
     mut collision_event: EventReader<CollisionEvent>,
 ) {
     for event in collision_event.iter() {
@@ -638,7 +655,7 @@ fn collision_event_system(
                     .insert(LerpDistance::new(
                         entity2,
                         Duration::from_secs_f32(BALL_MERGE_DURATION),
-                        BALL_RADII[ball2.level] * 2.0,
+                        BALL_RADII[ball2.level % BALL_RADII.len()] * 2.0,
                     ))
                     .insert(DestroyAfter(Timer::from_seconds(
                         BALL_MERGE_DURATION,
@@ -693,9 +710,29 @@ fn collision_event_system(
                     cursor_ball.0 = Some(entity2);
                 }
 
-                for child in query_children.iter_descendants(entity2) {
-                    query_text.get_mut(child).unwrap().sections[0].value = format!("{}", ball2.level / BALL_RADII.len());
+                if ball2.level % BALL_RADII.len() == 0 {
+                    let text_id = commands
+                        .spawn(Text2dBundle {
+                            text: Text::from_section(
+                                format!("{}", ball2.level / BALL_RADII.len()),
+                                TextStyle {
+                                    font: asset_server.load("fonts/VarelaRound-Regular.ttf"),
+                                    font_size: *BALL_RADII.last().unwrap(),
+                                    color: contrast_text_color(BALL_COLORS[0]),
+                                },
+                            )
+                            .with_alignment(TextAlignment::CENTER),
+                            transform: Transform::from_xyz(0.0, 0.0, 0.5)
+                                .with_scale(Vec3::splat(1.0 / *BALL_RADII.last().unwrap())),
+                            ..default()
+                        })
+                        .id();
+
+                    commands.entity(entity2).despawn_descendants();
+                    commands.entity(entity2).add_child(text_id);
                 }
+
+                high_score.0 += BigUint::from(2u32).pow(ball2.level as u32 - 1);
 
                 return;
             }
@@ -704,12 +741,20 @@ fn collision_event_system(
     }
 }
 
-fn text_update_system(
+fn ball_count_text_update_system(
     ball_count: Res<BallCount>,
     mut query: Query<&mut Text, With<BallCountText>>,
 ) {
     let mut text = query.single_mut();
     text.sections[0].value = ball_count.0.to_string();
+}
+
+fn high_score_text_update_system(
+    high_score: Res<HighScore>,
+    mut query: Query<&mut Text, With<HighScoreText>>,
+) {
+    let mut text = query.single_mut();
+    text.sections[0].value = high_score.0.to_string();
 }
 
 fn update_lerp_distance_system(
@@ -790,6 +835,7 @@ impl Plugin for GamePlugin {
         panic_plugin_not_installed::<TweeningPlugin>(app);
 
         app.init_resource::<BallCount>()
+            .init_resource::<HighScore>()
             .init_resource::<Meshes>()
             .init_resource::<WorldSpaceCursor>()
             .init_resource::<BallMovingTowardsCursor>()
@@ -800,7 +846,8 @@ impl Plugin for GamePlugin {
             .add_system(scroll_event_system)
             .add_system(update_observed_velocity_system)
             .add_system(collision_event_system.after(update_observed_velocity_system))
-            .add_system(text_update_system)
+            .add_system(ball_count_text_update_system)
+            .add_system(high_score_text_update_system)
             .add_system(update_lerp_distance_system)
             .add_system(update_destroy_after_system)
             .add_system(update_world_space_cursor_system)
@@ -827,6 +874,8 @@ fn main() {
         .add_plugin(GamePlugin)
         .run();
 }
+
+// TODO: save highscores ?
 
 // KNOWN BUGS:
 // possible cause: closed window while running app
