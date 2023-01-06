@@ -10,6 +10,7 @@ rustflags = ["-Clink-arg=-fuse-ld=/usr/local/bin/zld", "-Zshare-generics=y", "-C
 [target.aarch64-apple-darwin]
 rustflags = ["-Clink-arg=-fuse-ld=/opt/homebrew/bin/zld", "-Zshare-generics=y", "-Ctarget-feature=+crt-static"]
 
-[target.x86_64-pc-windows-msvc]
-linker = "rust-lld.exe"
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-gcc-ar"
 rustflags = ["-Ctarget-feature=+crt-static"]
