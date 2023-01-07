@@ -1,6 +1,10 @@
 #![windows_subsystem = "windows"]
 
-use std::time::Duration;
+use std::{
+    fs::File,
+    io::{Read, Write},
+    time::Duration,
+};
 
 use bevy::{
     app::AppExit,
@@ -13,9 +17,9 @@ use bevy::{
     prelude::*,
     render::camera::{RenderTarget, ScalingMode},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
+    tasks::IoTaskPool,
     window::{PresentMode, WindowResized},
 };
-use bevy_pkv::PkvStore;
 use bevy_rapier2d::prelude::*;
 use bevy_tweening::{
     lens::{ColorMaterialColorLens, TransformScaleLens},
@@ -27,7 +31,7 @@ const WALL_THICKNESS: f32 = 1000.0;
 
 const BALL_MIN_VERTICES: usize = 32;
 
-const BALL_COLORS: [Color; 31] = [
+const BALL_COLORS: [Color; 22] = [
     // rainbow
     Color::hsl(0.0 * 36.0, 1.0, 0.5),
     Color::hsl(1.0 * 36.0, 1.0, 0.5),
@@ -50,35 +54,15 @@ const BALL_COLORS: [Color; 31] = [
     Color::hsl(7.5 * 36.0, 1.0, 0.5),
     Color::hsl(8.5 * 36.0, 1.0, 0.5),
     Color::hsl(9.5 * 36.0, 1.0, 0.5),
-    // red whites
-    Color::hsl(0.0, 1.0, 0.6),
-    Color::hsl(0.0, 1.0, 0.64),
-    Color::hsl(0.0, 1.0, 0.68),
-    Color::hsl(0.0, 1.0, 0.72),
-    Color::hsl(0.0, 1.0, 0.76),
-    Color::hsl(0.0, 1.0, 0.8),
-    Color::hsl(0.0, 1.0, 0.84),
-    Color::hsl(0.0, 1.0, 0.88),
-    Color::hsl(0.0, 1.0, 0.92),
-    Color::hsl(0.0, 1.0, 0.96),
     // pure white
     Color::hsl(0.0, 1.0, 1.0),
+    // pure black
+    Color::hsl(0.0, 1.0, 0.0),
 ];
 
 const BALL_RADIUS: f32 = 16.0;
 // roughly sqrt(2)^i, loops after every 10 levels
-const BALL_RADII: [f32; 31] = [
-    BALL_RADIUS * 1.0,
-    BALL_RADIUS * 1.41421356237,
-    BALL_RADIUS * 2.0,
-    BALL_RADIUS * 2.82842712475,
-    BALL_RADIUS * 4.0,
-    BALL_RADIUS * 5.65685424949,
-    BALL_RADIUS * 8.0,
-    BALL_RADIUS * 11.313708499,
-    BALL_RADIUS * 16.0,
-    BALL_RADIUS * 22.627416998,
-    //
+const BALL_RADII: [f32; 22] = [
     BALL_RADIUS * 1.0,
     BALL_RADIUS * 1.41421356237,
     BALL_RADIUS * 2.0,
@@ -102,12 +86,16 @@ const BALL_RADII: [f32; 31] = [
     BALL_RADIUS * 22.627416998,
     //
     BALL_RADIUS * 32.0,
+    //
+    BALL_RADIUS * 1.5,
 ];
 
-const BALL_MERGE_DURATION: f32 = 0.4;
+const BALL_MERGE_SECS: f32 = 0.4;
 const BALL_MERGE_EASE_FUNCTION: EaseFunction = EaseFunction::QuadraticInOut;
 
 const BALL_TEXT_SCALE: f32 = 1.0;
+
+const BLACK_HOLE_SUCK_SECS: f32 = 0.5;
 
 const PLAY_AREA_WIDTH: f32 = 600.0;
 const PLAY_AREA_HEIGHT: f32 = 100.0 * PLAY_AREA_WIDTH;
@@ -127,17 +115,17 @@ struct CursorIcon;
 
 // linearly interpolates distance by changing position
 #[derive(Component)]
-struct LerpDistance {
+struct LerpTowards {
     target: Entity,
     timer: Timer,
     duration: Duration,
     start_distance: f32,
 }
 
-impl LerpDistance {
+impl LerpTowards {
     /// Creates a LerpDistance component using the current start and end positions
     fn new(target: Entity, duration: Duration, start_distance: f32) -> Self {
-        LerpDistance {
+        LerpTowards {
             target,
             timer: Timer::new(duration, TimerMode::Once),
             duration,
@@ -180,6 +168,12 @@ struct Wall;
 struct MainCamera;
 
 #[derive(Component)]
+struct BlackHole;
+
+#[derive(Component)]
+struct IsIntersectingBlackHole;
+
+#[derive(Component)]
 struct TextAlphaLens {
     start: f32,
     end: f32,
@@ -203,7 +197,9 @@ struct ColorMaterialAlphaLens {
 
 impl Lens<ColorMaterial> for ColorMaterialAlphaLens {
     fn lerp(&mut self, target: &mut ColorMaterial, ratio: f32) {
-        target.color.set_a(self.start * (1.0 - ratio) + self.end * ratio);
+        target
+            .color
+            .set_a(self.start * (1.0 - ratio) + self.end * ratio);
     }
 }
 
@@ -385,22 +381,28 @@ fn setup_load_game(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut high_score: ResMut<HighScore>,
     mut ball_count: ResMut<BallCount>,
+    asset_server: Res<AssetServer>,
     meshes: Res<Meshes>,
-    pkv: Res<PkvStore>,
 ) {
-    if pkv.get::<bool>("saved").is_err() {
+    let Ok(mut file) = File::open("assets/save_data") else {
         return;
-    }
+    };
 
-    let high_score_raw: Vec<u32> = pkv.get("high_score").unwrap();
+    let mut bytes = vec![];
+    file.read_to_end(&mut bytes)
+        .expect("Save data is corrupted.");
+
+    let (balls_raw, high_score_raw) =
+        ron::from_str::<(Vec<(Vec2, usize)>, Vec<u32>)>(&String::from_utf8(bytes).unwrap())
+            .unwrap();
+
     high_score.0 = BigUint::from_slice(&high_score_raw);
 
-    let balls: Vec<(Vec2, usize)> = pkv.get("balls").unwrap();
-    ball_count.0 = balls.len();
-    balls.into_iter().for_each(|(position, level)| {
+    ball_count.0 = balls_raw.len();
+    balls_raw.into_iter().for_each(|(position, level)| {
         let material_handle = materials.add(ColorMaterial::from(BALL_COLORS[level]));
 
-        commands
+        let entity = commands
             .spawn(MaterialMesh2dBundle {
                 mesh: meshes.balls[level].clone(),
                 material: material_handle.clone(),
@@ -418,7 +420,40 @@ fn setup_load_game(
                 Transform::from_xyz(position.x, position.y, level as f32)
                     .with_scale(Vec3::splat(BALL_RADII[level] * 2.0)),
             ))
-            .insert(AssetAnimator::new(material_handle, Tween::new(EaseFunction::QuadraticInOut, Duration::from_secs_f32(3.0), ColorMaterialAlphaLens { start: 0.0, end: 1.0 })));
+            .insert(AssetAnimator::new(
+                material_handle,
+                Tween::new(
+                    EaseFunction::QuadraticInOut,
+                    Duration::from_secs_f32(3.0),
+                    ColorMaterialAlphaLens {
+                        start: 0.0,
+                        end: 1.0,
+                    },
+                ),
+            ))
+            .id();
+
+        if level / 10 == 1 {
+            let text_entity = commands
+                .spawn(Text2dBundle {
+                    text: Text::from_section(
+                        "1",
+                        TextStyle {
+                            font: asset_server.load("fonts/VarelaRound-Regular.ttf"),
+                            font_size: 50.0 * BALL_TEXT_SCALE,
+                            color: contrasting_text_color(BALL_COLORS[0]),
+                        },
+                    )
+                    .with_alignment(TextAlignment::CENTER),
+                    transform: Transform::from_xyz(0.0, 0.0, 0.5).with_scale(Vec3::splat(
+                        BALL_TEXT_SCALE / 50.0, // TODO: scale when the size of the text does not fit in the ball, e.g. text = "10" or "100"
+                    )),
+                    ..default()
+                })
+                .id();
+
+            commands.entity(entity).add_child(text_entity);
+        }
     })
 }
 
@@ -546,6 +581,29 @@ fn cursor_input_system(
     }
 }
 
+fn keyboard_input_system(
+    mut windows: ResMut<Windows>,
+    input: Res<Input<KeyCode>>,
+    mut query_camera: Query<&mut Transform, With<MainCamera>>,
+    mut exit_event: EventWriter<AppExit>,
+) {
+    if input.just_pressed(KeyCode::Escape) {
+        exit_event.send_default();
+    }
+
+    if input.just_pressed(KeyCode::F11) {
+        let window = windows.primary_mut();
+
+        if window.mode() == WindowMode::Fullscreen {
+            window.set_mode(WindowMode::Windowed);
+        } else {
+            window.set_mode(WindowMode::Fullscreen);
+        }
+
+        clamp_camera_y(query_camera.single_mut(), window);
+    }
+}
+
 fn clamp_camera_y(mut transform: Mut<Transform>, window: &Window) {
     // half of the camera's height
     let min = window.height() / window.width() * PLAY_AREA_WIDTH;
@@ -606,13 +664,13 @@ fn merge_balls(
         .entity(entity1)
         .remove::<Collider>()
         .remove::<RigidBody>()
-        .insert(LerpDistance::new(
+        .insert(LerpTowards::new(
             entity2,
-            Duration::from_secs_f32(BALL_MERGE_DURATION),
+            Duration::from_secs_f32(BALL_MERGE_SECS),
             BALL_RADII[ball2.level] * 2.0,
         ))
         .insert(DestroyAfter(Timer::from_seconds(
-            BALL_MERGE_DURATION,
+            BALL_MERGE_SECS,
             TimerMode::Once,
         )))
         .despawn_descendants();
@@ -622,7 +680,7 @@ fn merge_balls(
     if ball2.level % 10 == 0 {
         commands.entity(entity1).insert(Animator::new(Tween::new(
             BALL_MERGE_EASE_FUNCTION,
-            Duration::from_secs_f32(BALL_MERGE_DURATION),
+            Duration::from_secs_f32(BALL_MERGE_SECS),
             TransformScaleLens {
                 start: trans2.scale,
                 end: Vec3::splat(BALL_RADII[ball2.level] * 2.0),
@@ -638,7 +696,7 @@ fn merge_balls(
         .remove::<AssetAnimator<ColorMaterial>>()
         .insert(Animator::new(Tween::new(
             BALL_MERGE_EASE_FUNCTION,
-            Duration::from_secs_f32(BALL_MERGE_DURATION),
+            Duration::from_secs_f32(BALL_MERGE_SECS),
             TransformScaleLens {
                 start: trans2.scale,
                 end: Vec3::splat(BALL_RADII[ball2.level] * 2.0), // doubles surface area
@@ -648,7 +706,7 @@ fn merge_balls(
             mat2.clone(),
             Tween::new(
                 BALL_MERGE_EASE_FUNCTION,
-                Duration::from_secs_f32(BALL_MERGE_DURATION),
+                Duration::from_secs_f32(BALL_MERGE_SECS),
                 ColorMaterialColorLens {
                     start: BALL_COLORS[ball2.level - 1],
                     end: BALL_COLORS[ball2.level],
@@ -662,37 +720,60 @@ fn merge_balls(
         cursor_ball.0 = Some(entity2);
     }
 
-    if ball2.level % 10 == 0 {
-        let text_id = commands
+    if ball2.level == 10 {
+        let text_entity = commands
             .spawn(Text2dBundle {
                 text: Text::from_section(
-                    format!("{}", ball2.level / 10),
+                    "1",
                     TextStyle {
                         font: asset_server.load("fonts/VarelaRound-Regular.ttf"),
-                        font_size: *BALL_RADII.last().unwrap() * BALL_TEXT_SCALE,
+                        font_size: 50.0 * BALL_TEXT_SCALE,
                         color: contrasting_text_color(BALL_COLORS[0]),
                     },
                 )
                 .with_alignment(TextAlignment::CENTER),
                 transform: Transform::from_xyz(0.0, 0.0, 0.5).with_scale(Vec3::splat(
-                    BALL_TEXT_SCALE / *BALL_RADII.last().unwrap(), // TODO: scale when the size of the text does not fit in the ball, e.g. text = "10" or "100"
+                    BALL_TEXT_SCALE / 50.0, // TODO: scale when the size of the text does not fit in the ball, e.g. text = "10" or "100"
                 )),
                 ..default()
             })
             .id();
 
         commands.entity(entity2).despawn_descendants();
-        commands.entity(entity2).add_child(text_id);
+        commands.entity(entity2).add_child(text_entity);
     }
 
     high_score.0 += BigUint::from(2u32).pow(ball2.level as u32 - 1);
 }
 
+fn spawn_black_hole(
+    commands: &mut Commands,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    meshes: &Res<Meshes>,
+    position: Vec2,
+) {
+    commands
+        .spawn(MaterialMesh2dBundle {
+            mesh: meshes.balls.last().unwrap().clone(),
+            material: materials.add(ColorMaterial::from(*BALL_COLORS.last().unwrap())),
+            ..default()
+        })
+        .insert(Collider::ball(0.5))
+        .insert(Sensor)
+        .insert(ActiveEvents::COLLISION_EVENTS)
+        .insert(TransformBundle::from_transform(
+            Transform::from_xyz(position.x, position.y, BALL_RADII.len() as f32)
+                .with_scale(Vec3::splat(*BALL_RADII.last().unwrap() * 2.0)),
+        ))
+        .insert(BlackHole);
+}
+
 fn collision_event_system(
-    commands: Commands,
+    mut commands: Commands,
     mut ball_count: ResMut<BallCount>,
     cursor_ball: ResMut<BallMovingTowardsCursor>,
     high_score: ResMut<HighScore>,
+    materials: ResMut<Assets<ColorMaterial>>,
     asset_server: Res<AssetServer>,
     meshes: Res<Meshes>,
     mut query: Query<(
@@ -712,8 +793,22 @@ fn collision_event_system(
                 };
 
                 // compare ball levels
-                if a.0.level != b.0.level && a.0.level < BALL_COLORS.len() {
+                if a.0.level != b.0.level {
                     continue;
+                }
+
+                if a.0.level == BALL_COLORS.len() - 2 {
+                    spawn_black_hole(
+                        &mut commands,
+                        materials,
+                        &meshes,
+                        (a.2.translation.truncate() + b.2.translation.truncate()) / 2.0,
+                    );
+
+                    commands.entity(entity1).despawn_recursive();
+                    commands.entity(entity2).despawn_recursive();
+
+                    return;
                 }
 
                 let [(pos1, vel1), (pos2, vel2)] = [
@@ -774,7 +869,7 @@ fn high_score_text_update_system(
 
 fn update_lerp_distance_system(
     time: Res<Time>,
-    mut query_lerpers: Query<(Entity, &mut LerpDistance), With<Transform>>,
+    mut query_lerpers: Query<(Entity, &mut LerpTowards), With<Transform>>,
     mut query_transforms: Query<&mut Transform>,
 ) {
     query_lerpers.iter_mut().for_each(|(lerper, mut lerp)| {
@@ -831,26 +926,109 @@ fn update_move_towards_cursor_system(
     }
 }
 
+fn update_black_hole_interaction_system(
+    mut commands: Commands,
+    mut rapier_context: ResMut<RapierContext>,
+    mut cursor_ball: ResMut<BallMovingTowardsCursor>,
+    time: Res<Time>,
+    mut query_balls: Query<
+        (
+            Entity,
+            &RapierRigidBodyHandle,
+            &Transform,
+            Option<&IsIntersectingBlackHole>,
+        ),
+        With<Ball>,
+    >,
+    query_black_holes: Query<(Entity, &Transform), With<BlackHole>>,
+) {
+    for (hole_entity, hole_transform) in query_black_holes.iter() {
+        let hole_position = hole_transform.translation.truncate();
+
+        for (ball_entity, &handle, ball_transform, prev_intersect) in query_balls.iter_mut() {
+            let rigid_body = rapier_context.bodies.get_mut(handle.0).unwrap();
+
+            let ball_position = ball_transform.translation.truncate();
+
+            let distance = ball_position.distance(hole_position);
+            let Some(direction) = (ball_position - hole_position).try_normalize() else { continue; };
+
+            let impulse = 1e5 * direction / (distance * distance + 1e-10) * time.delta_seconds();
+
+            rigid_body.apply_impulse(impulse.into(), true);
+
+            let intersecting =
+                rapier_context.intersection_pair(hole_entity, ball_entity) == Some(true);
+            
+            if prev_intersect.is_none() && intersecting {
+                commands
+                    .entity(ball_entity)
+                    .insert(Animator::new(Tween::new(
+                        BALL_MERGE_EASE_FUNCTION,
+                        Duration::from_secs_f32(BLACK_HOLE_SUCK_SECS),
+                        TransformScaleLens {
+                            start: ball_transform.scale,
+                            end: Vec3::splat(1e-10),
+                        },
+                    )))
+                    .insert(IsIntersectingBlackHole)
+                    .insert(LerpTowards::new(
+                        hole_entity,
+                        Duration::from_secs_f32(BLACK_HOLE_SUCK_SECS),
+                        distance,
+                    ))
+                    .insert(DestroyAfter(Timer::from_seconds(
+                        BLACK_HOLE_SUCK_SECS,
+                        TimerMode::Once,
+                    )));
+
+                if Some(ball_entity) == cursor_ball.0 {
+                    cursor_ball.0 = None;
+                }
+            }
+        }
+    }
+}
+
 // bevy supports world saving, this is simply a (temporary) solution
 fn save_game_on_exit_event_system(
-    mut pkv: ResMut<PkvStore>,
     high_score: Res<HighScore>,
-    query: Query<(&Transform, &Ball)>,
+    query_balls: Query<(&Transform, &Ball)>,
+    query_black_holes: Query<With<BlackHole>>,
     event_reader: EventReader<AppExit>,
 ) {
     if event_reader.is_empty() {
         return;
     }
 
-    let balls = query
+    let mut balls_raw = query_balls
         .iter()
         .map(|(trans, ball)| (trans.translation.truncate(), ball.level))
         .collect::<Vec<_>>();
 
-    pkv.set("saved", &true).unwrap();
-    pkv.set("balls", &balls).unwrap();
-    pkv.set("high_score", &high_score.0.to_u32_digits())
-        .unwrap();
+    let mut high_score_raw = high_score.0.to_u32_digits();
+
+    // game has ended, clear save file
+    if !query_black_holes.is_empty() {
+        balls_raw = vec![];
+        high_score_raw = vec![];
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    IoTaskPool::get()
+        .spawn(async move {
+            // Write the scene RON data to file
+            File::create(format!("assets/save_data"))
+                .and_then(|mut file| {
+                    file.write(
+                        ron::to_string(&(balls_raw, high_score_raw))
+                            .unwrap()
+                            .as_bytes(),
+                    )
+                })
+                .expect("Error while saving to file");
+        })
+        .detach();
 }
 
 pub struct BallGamePlugin;
@@ -877,7 +1055,6 @@ impl Plugin for BallGamePlugin {
             .init_resource::<Meshes>()
             .init_resource::<WorldSpaceCursor>()
             .init_resource::<BallMovingTowardsCursor>()
-            .insert_resource(PkvStore::new("IvoteSligte", "ball_game"))
             .add_startup_system(setup_general)
             .add_startup_system(setup_ui)
             .add_startup_system(setup_meshes)
@@ -885,6 +1062,7 @@ impl Plugin for BallGamePlugin {
             .add_startup_system(setup_load_game.after(setup_meshes))
             .add_system(window_resize_event)
             .add_system(scroll_event_system)
+            .add_system(keyboard_input_system)
             .add_system(update_observed_velocity_system)
             .add_system(collision_event_system.after(update_observed_velocity_system))
             .add_system(ball_count_text_update_system)
@@ -892,6 +1070,7 @@ impl Plugin for BallGamePlugin {
             .add_system(update_lerp_distance_system)
             .add_system(update_destroy_after_system)
             .add_system(update_world_space_cursor_system)
+            .add_system(update_black_hole_interaction_system)
             .add_system(cursor_input_system.after(update_world_space_cursor_system))
             .add_system(update_move_towards_cursor_system.after(update_world_space_cursor_system))
             .add_system_to_stage(
