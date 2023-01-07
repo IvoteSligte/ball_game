@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use bevy::{
+    app::AppExit,
     core_pipeline::{bloom::BloomSettings, clear_color::ClearColorConfig},
     input::{
         mouse::{MouseScrollUnit, MouseWheel},
@@ -14,6 +15,7 @@ use bevy::{
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
     window::{PresentMode, WindowResized},
 };
+use bevy_pkv::PkvStore;
 use bevy_rapier2d::prelude::*;
 use bevy_tweening::{
     lens::{ColorMaterialColorLens, TransformScaleLens},
@@ -25,7 +27,8 @@ const WALL_THICKNESS: f32 = 1000.0;
 
 const BALL_MIN_VERTICES: usize = 32;
 
-const BALL_COLORS: [Color; 10 * 12] = [
+const BALL_COLORS: [Color; 31] = [
+    // rainbow
     Color::hsl(0.0 * 36.0, 1.0, 0.5),
     Color::hsl(1.0 * 36.0, 1.0, 0.5),
     Color::hsl(2.0 * 36.0, 1.0, 0.5),
@@ -36,132 +39,35 @@ const BALL_COLORS: [Color; 10 * 12] = [
     Color::hsl(7.0 * 36.0, 1.0, 0.5),
     Color::hsl(8.0 * 36.0, 1.0, 0.5),
     Color::hsl(9.0 * 36.0, 1.0, 0.5),
-    // reds
-    Color::hsl(0.0 * 36.0, 1.0, 0.5),
-    Color::hsl(0.0 * 36.0, 1.0, 0.55),
-    Color::hsl(0.0 * 36.0, 1.0, 0.6),
-    Color::hsl(0.0 * 36.0, 1.0, 0.65),
-    Color::hsl(0.0 * 36.0, 1.0, 0.7),
-    Color::hsl(0.0 * 36.0, 1.0, 0.75),
-    Color::hsl(0.0 * 36.0, 1.0, 0.8),
-    Color::hsl(0.0 * 36.0, 1.0, 0.85),
-    Color::hsl(0.0 * 36.0, 1.0, 0.9),
-    Color::hsl(0.0 * 36.0, 1.0, 0.95),
-    // oranges
-    Color::hsl(1.0 * 36.0, 1.0, 0.5),
-    Color::hsl(1.0 * 36.0, 1.0, 0.55),
-    Color::hsl(1.0 * 36.0, 1.0, 0.6),
-    Color::hsl(1.0 * 36.0, 1.0, 0.65),
-    Color::hsl(1.0 * 36.0, 1.0, 0.7),
-    Color::hsl(1.0 * 36.0, 1.0, 0.75),
-    Color::hsl(1.0 * 36.0, 1.0, 0.8),
-    Color::hsl(1.0 * 36.0, 1.0, 0.85),
-    Color::hsl(1.0 * 36.0, 1.0, 0.9),
-    Color::hsl(1.0 * 36.0, 1.0, 0.95),
-    // yellows
-    Color::hsl(2.0 * 36.0, 1.0, 0.5),
-    Color::hsl(2.0 * 36.0, 1.0, 0.55),
-    Color::hsl(2.0 * 36.0, 1.0, 0.6),
-    Color::hsl(2.0 * 36.0, 1.0, 0.65),
-    Color::hsl(2.0 * 36.0, 1.0, 0.7),
-    Color::hsl(2.0 * 36.0, 1.0, 0.75),
-    Color::hsl(2.0 * 36.0, 1.0, 0.8),
-    Color::hsl(2.0 * 36.0, 1.0, 0.85),
-    Color::hsl(2.0 * 36.0, 1.0, 0.9),
-    Color::hsl(2.0 * 36.0, 1.0, 0.95),
-    // greens
-    Color::hsl(3.0 * 36.0, 1.0, 0.5),
-    Color::hsl(3.0 * 36.0, 1.0, 0.55),
-    Color::hsl(3.0 * 36.0, 1.0, 0.6),
-    Color::hsl(3.0 * 36.0, 1.0, 0.65),
-    Color::hsl(3.0 * 36.0, 1.0, 0.7),
-    Color::hsl(3.0 * 36.0, 1.0, 0.75),
-    Color::hsl(3.0 * 36.0, 1.0, 0.8),
-    Color::hsl(3.0 * 36.0, 1.0, 0.85),
-    Color::hsl(3.0 * 36.0, 1.0, 0.9),
-    Color::hsl(3.0 * 36.0, 1.0, 0.95),
-    // radioactive greens
-    Color::hsl(4.0 * 36.0, 1.0, 0.5),
-    Color::hsl(4.0 * 36.0, 1.0, 0.55),
-    Color::hsl(4.0 * 36.0, 1.0, 0.6),
-    Color::hsl(4.0 * 36.0, 1.0, 0.65),
-    Color::hsl(4.0 * 36.0, 1.0, 0.7),
-    Color::hsl(4.0 * 36.0, 1.0, 0.75),
-    Color::hsl(4.0 * 36.0, 1.0, 0.8),
-    Color::hsl(4.0 * 36.0, 1.0, 0.85),
-    Color::hsl(4.0 * 36.0, 1.0, 0.9),
-    Color::hsl(4.0 * 36.0, 1.0, 0.95),
-    // aquas
-    Color::hsl(5.0 * 36.0, 1.0, 0.5),
-    Color::hsl(5.0 * 36.0, 1.0, 0.55),
-    Color::hsl(5.0 * 36.0, 1.0, 0.6),
-    Color::hsl(5.0 * 36.0, 1.0, 0.65),
-    Color::hsl(5.0 * 36.0, 1.0, 0.7),
-    Color::hsl(5.0 * 36.0, 1.0, 0.75),
-    Color::hsl(5.0 * 36.0, 1.0, 0.8),
-    Color::hsl(5.0 * 36.0, 1.0, 0.85),
-    Color::hsl(5.0 * 36.0, 1.0, 0.9),
-    Color::hsl(5.0 * 36.0, 1.0, 0.95),
-    // blues
-    Color::hsl(6.0 * 36.0, 1.0, 0.5),
-    Color::hsl(6.0 * 36.0, 1.0, 0.55),
-    Color::hsl(6.0 * 36.0, 1.0, 0.6),
-    Color::hsl(6.0 * 36.0, 1.0, 0.65),
-    Color::hsl(6.0 * 36.0, 1.0, 0.7),
-    Color::hsl(6.0 * 36.0, 1.0, 0.75),
-    Color::hsl(6.0 * 36.0, 1.0, 0.8),
-    Color::hsl(6.0 * 36.0, 1.0, 0.85),
-    Color::hsl(6.0 * 36.0, 1.0, 0.9),
-    Color::hsl(6.0 * 36.0, 1.0, 0.95),
-    // dark blues
-    Color::hsl(7.0 * 36.0, 1.0, 0.5),
-    Color::hsl(7.0 * 36.0, 1.0, 0.55),
-    Color::hsl(7.0 * 36.0, 1.0, 0.6),
-    Color::hsl(7.0 * 36.0, 1.0, 0.65),
-    Color::hsl(7.0 * 36.0, 1.0, 0.7),
-    Color::hsl(7.0 * 36.0, 1.0, 0.75),
-    Color::hsl(7.0 * 36.0, 1.0, 0.8),
-    Color::hsl(7.0 * 36.0, 1.0, 0.85),
-    Color::hsl(7.0 * 36.0, 1.0, 0.9),
-    Color::hsl(7.0 * 36.0, 1.0, 0.95),
-    // purples
-    Color::hsl(8.0 * 36.0, 1.0, 0.5),
-    Color::hsl(8.0 * 36.0, 1.0, 0.55),
-    Color::hsl(8.0 * 36.0, 1.0, 0.6),
-    Color::hsl(8.0 * 36.0, 1.0, 0.65),
-    Color::hsl(8.0 * 36.0, 1.0, 0.7),
-    Color::hsl(8.0 * 36.0, 1.0, 0.75),
-    Color::hsl(8.0 * 36.0, 1.0, 0.8),
-    Color::hsl(8.0 * 36.0, 1.0, 0.85),
-    Color::hsl(8.0 * 36.0, 1.0, 0.9),
-    Color::hsl(8.0 * 36.0, 1.0, 0.95),
-    // pinks
-    Color::hsl(9.0 * 36.0, 1.0, 0.5),
-    Color::hsl(9.0 * 36.0, 1.0, 0.55),
-    Color::hsl(9.0 * 36.0, 1.0, 0.6),
-    Color::hsl(9.0 * 36.0, 1.0, 0.65),
-    Color::hsl(9.0 * 36.0, 1.0, 0.7),
-    Color::hsl(9.0 * 36.0, 1.0, 0.75),
-    Color::hsl(9.0 * 36.0, 1.0, 0.8),
-    Color::hsl(9.0 * 36.0, 1.0, 0.85),
-    Color::hsl(9.0 * 36.0, 1.0, 0.9),
-    Color::hsl(9.0 * 36.0, 1.0, 0.95),
-    // white
-    Color::hsl(0.0, 1.0, 1.0),
-    Color::hsl(0.0, 1.0, 1.0),
-    Color::hsl(0.0, 1.0, 1.0),
-    Color::hsl(0.0, 1.0, 1.0),
-    Color::hsl(0.0, 1.0, 1.0),
-    Color::hsl(0.0, 1.0, 1.0),
-    Color::hsl(0.0, 1.0, 1.0),
-    Color::hsl(0.0, 1.0, 1.0),
-    Color::hsl(0.0, 1.0, 1.0),
+    // rainbow 2
+    Color::hsl(0.5 * 36.0, 1.0, 0.5),
+    Color::hsl(1.5 * 36.0, 1.0, 0.5),
+    Color::hsl(2.5 * 36.0, 1.0, 0.5),
+    Color::hsl(3.5 * 36.0, 1.0, 0.5),
+    Color::hsl(4.5 * 36.0, 1.0, 0.5),
+    Color::hsl(5.5 * 36.0, 1.0, 0.5),
+    Color::hsl(6.5 * 36.0, 1.0, 0.5),
+    Color::hsl(7.5 * 36.0, 1.0, 0.5),
+    Color::hsl(8.5 * 36.0, 1.0, 0.5),
+    Color::hsl(9.5 * 36.0, 1.0, 0.5),
+    // red whites
+    Color::hsl(0.0, 1.0, 0.6),
+    Color::hsl(0.0, 1.0, 0.64),
+    Color::hsl(0.0, 1.0, 0.68),
+    Color::hsl(0.0, 1.0, 0.72),
+    Color::hsl(0.0, 1.0, 0.76),
+    Color::hsl(0.0, 1.0, 0.8),
+    Color::hsl(0.0, 1.0, 0.84),
+    Color::hsl(0.0, 1.0, 0.88),
+    Color::hsl(0.0, 1.0, 0.92),
+    Color::hsl(0.0, 1.0, 0.96),
+    // pure white
     Color::hsl(0.0, 1.0, 1.0),
 ];
 
 const BALL_RADIUS: f32 = 16.0;
 // roughly sqrt(2)^i, loops after every 10 levels
-const BALL_RADII: [f32; 10] = [
+const BALL_RADII: [f32; 31] = [
     BALL_RADIUS * 1.0,
     BALL_RADIUS * 1.41421356237,
     BALL_RADIUS * 2.0,
@@ -172,10 +78,36 @@ const BALL_RADII: [f32; 10] = [
     BALL_RADIUS * 11.313708499,
     BALL_RADIUS * 16.0,
     BALL_RADIUS * 22.627416998,
+    //
+    BALL_RADIUS * 1.0,
+    BALL_RADIUS * 1.41421356237,
+    BALL_RADIUS * 2.0,
+    BALL_RADIUS * 2.82842712475,
+    BALL_RADIUS * 4.0,
+    BALL_RADIUS * 5.65685424949,
+    BALL_RADIUS * 8.0,
+    BALL_RADIUS * 11.313708499,
+    BALL_RADIUS * 16.0,
+    BALL_RADIUS * 22.627416998,
+    //
+    BALL_RADIUS * 1.0,
+    BALL_RADIUS * 1.41421356237,
+    BALL_RADIUS * 2.0,
+    BALL_RADIUS * 2.82842712475,
+    BALL_RADIUS * 4.0,
+    BALL_RADIUS * 5.65685424949,
+    BALL_RADIUS * 8.0,
+    BALL_RADIUS * 11.313708499,
+    BALL_RADIUS * 16.0,
+    BALL_RADIUS * 22.627416998,
+    //
+    BALL_RADIUS * 32.0,
 ];
 
 const BALL_MERGE_DURATION: f32 = 0.4;
 const BALL_MERGE_EASE_FUNCTION: EaseFunction = EaseFunction::QuadraticInOut;
+
+const BALL_TEXT_SCALE: f32 = 1.0;
 
 const PLAY_AREA_WIDTH: f32 = 600.0;
 const PLAY_AREA_HEIGHT: f32 = 100.0 * PLAY_AREA_WIDTH;
@@ -264,6 +196,18 @@ impl Lens<Text> for TextAlphaLens {
 }
 
 #[derive(Component)]
+struct ColorMaterialAlphaLens {
+    start: f32,
+    end: f32,
+}
+
+impl Lens<ColorMaterial> for ColorMaterialAlphaLens {
+    fn lerp(&mut self, target: &mut ColorMaterial, ratio: f32) {
+        target.color.set_a(self.start * (1.0 - ratio) + self.end * ratio);
+    }
+}
+
+#[derive(Component)]
 struct HighScoreText;
 
 #[derive(Component)]
@@ -286,7 +230,7 @@ struct BallMovingTowardsCursor(Option<Entity>);
 #[derive(Default, Resource)]
 struct HighScore(BigUint);
 
-fn setup(mut commands: Commands, windows: Res<Windows>, asset_server: Res<AssetServer>) {
+fn setup_general(mut commands: Commands, windows: Res<Windows>) {
     let window = windows.get_primary().unwrap();
 
     let mut camera_bundle = Camera2dBundle {
@@ -314,6 +258,45 @@ fn setup(mut commands: Commands, windows: Res<Windows>, asset_server: Res<AssetS
         })
         .insert(MainCamera);
 
+    // left
+    commands
+        .spawn(Wall)
+        .insert(Collider::cuboid(WALL_THICKNESS, PLAY_AREA_HEIGHT))
+        .insert(TransformBundle::from(Transform::from_xyz(
+            -(PLAY_AREA_WIDTH + WALL_THICKNESS),
+            0.0,
+            0.0,
+        )));
+    // right
+    commands
+        .spawn(Wall)
+        .insert(Collider::cuboid(WALL_THICKNESS, PLAY_AREA_HEIGHT))
+        .insert(TransformBundle::from(Transform::from_xyz(
+            PLAY_AREA_WIDTH + WALL_THICKNESS,
+            0.0,
+            0.0,
+        )));
+    // bottom
+    commands
+        .spawn(Wall)
+        .insert(Collider::cuboid(PLAY_AREA_WIDTH, WALL_THICKNESS))
+        .insert(TransformBundle::from(Transform::from_xyz(
+            0.0,
+            -WALL_THICKNESS,
+            0.0,
+        )));
+    // top
+    commands
+        .spawn(Wall)
+        .insert(Collider::cuboid(PLAY_AREA_WIDTH, WALL_THICKNESS))
+        .insert(TransformBundle::from(Transform::from_xyz(
+            0.0,
+            PLAY_AREA_HEIGHT + WALL_THICKNESS,
+            0.0,
+        )));
+}
+
+fn setup_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands
         .spawn(
             TextBundle::from_section(
@@ -359,43 +342,6 @@ fn setup(mut commands: Commands, windows: Res<Windows>, asset_server: Res<AssetS
             }),
         )
         .insert(HighScoreText);
-
-    // left
-    commands
-        .spawn(Wall)
-        .insert(Collider::cuboid(WALL_THICKNESS, PLAY_AREA_HEIGHT))
-        .insert(TransformBundle::from(Transform::from_xyz(
-            -(PLAY_AREA_WIDTH + WALL_THICKNESS),
-            0.0,
-            0.0,
-        )));
-    // right
-    commands
-        .spawn(Wall)
-        .insert(Collider::cuboid(WALL_THICKNESS, PLAY_AREA_HEIGHT))
-        .insert(TransformBundle::from(Transform::from_xyz(
-            PLAY_AREA_WIDTH + WALL_THICKNESS,
-            0.0,
-            0.0,
-        )));
-    // bottom
-    commands
-        .spawn(Wall)
-        .insert(Collider::cuboid(PLAY_AREA_WIDTH, WALL_THICKNESS))
-        .insert(TransformBundle::from(Transform::from_xyz(
-            0.0,
-            -WALL_THICKNESS,
-            0.0,
-        )));
-    // top
-    commands
-        .spawn(Wall)
-        .insert(Collider::cuboid(PLAY_AREA_WIDTH, WALL_THICKNESS))
-        .insert(TransformBundle::from(Transform::from_xyz(
-            0.0,
-            PLAY_AREA_HEIGHT + WALL_THICKNESS,
-            0.0,
-        )));
 }
 
 fn setup_meshes(mut assets: ResMut<Assets<Mesh>>, mut handles: ResMut<Meshes>) {
@@ -432,6 +378,48 @@ fn setup_cursor_icon(
             ..default()
         })
         .insert(CursorIcon);
+}
+
+fn setup_load_game(
+    mut commands: Commands,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut high_score: ResMut<HighScore>,
+    mut ball_count: ResMut<BallCount>,
+    meshes: Res<Meshes>,
+    pkv: Res<PkvStore>,
+) {
+    if pkv.get::<bool>("saved").is_err() {
+        return;
+    }
+
+    let high_score_raw: Vec<u32> = pkv.get("high_score").unwrap();
+    high_score.0 = BigUint::from_slice(&high_score_raw);
+
+    let balls: Vec<(Vec2, usize)> = pkv.get("balls").unwrap();
+    ball_count.0 = balls.len();
+    balls.into_iter().for_each(|(position, level)| {
+        let material_handle = materials.add(ColorMaterial::from(BALL_COLORS[level]));
+
+        commands
+            .spawn(MaterialMesh2dBundle {
+                mesh: meshes.balls[level].clone(),
+                material: material_handle.clone(),
+                ..default()
+            })
+            .insert(Ball { level })
+            .insert(ObservedVelocity {
+                prev_position: position,
+                velocity: Vec2::ZERO,
+            })
+            .insert(RigidBody::Dynamic)
+            .insert(Collider::ball(0.5))
+            .insert(ActiveEvents::COLLISION_EVENTS)
+            .insert(TransformBundle::from_transform(
+                Transform::from_xyz(position.x, position.y, level as f32)
+                    .with_scale(Vec3::splat(BALL_RADII[level] * 2.0)),
+            ))
+            .insert(AssetAnimator::new(material_handle, Tween::new(EaseFunction::QuadraticInOut, Duration::from_secs_f32(3.0), ColorMaterialAlphaLens { start: 0.0, end: 1.0 })));
+    })
 }
 
 // adapted from https://bevy-cheatbook.github.io/cookbook/cursor2world.html
@@ -483,14 +471,8 @@ fn relative_luminance(color: Color) -> f32 {
         .dot(LUMINANCE_MAP)
 }
 
-fn contrast_text_color(background: Color) -> Color {
-    // contrast = (L1 + 0.05) / (L2 + 0.05), L2 = (1.0 - a) * L1
-    const CONTRAST: f32 = 1.8;
-
-    let l1 = relative_luminance(background);
-    let a = 1.0 - 1.0 / CONTRAST + (0.05 - 0.05 / CONTRAST) / l1;
-
-    Color::hsla(0.0, 1.0, 0.0, a)
+fn contrasting_text_color(background: Color) -> Color {
+    Color::hsla(0.0, 1.0, 0.0, (1.0 - relative_luminance(background)) / 1.5)
 }
 
 fn cursor_input_system(
@@ -605,11 +587,112 @@ fn scroll_event_system(
     }
 }
 
-fn collision_event_system(
+fn merge_balls(
     mut commands: Commands,
-    mut ball_count: ResMut<BallCount>,
     mut cursor_ball: ResMut<BallMovingTowardsCursor>,
     mut high_score: ResMut<HighScore>,
+    asset_server: Res<AssetServer>,
+    meshes: Res<Meshes>,
+    entity1: Entity,
+    entity2: Entity,
+    (mut ball2, mut mesh2, mut trans2, mat2): (
+        Mut<Ball>,
+        Mut<Mesh2dHandle>,
+        Mut<Transform>,
+        &Handle<ColorMaterial>,
+    ),
+) {
+    commands
+        .entity(entity1)
+        .remove::<Collider>()
+        .remove::<RigidBody>()
+        .insert(LerpDistance::new(
+            entity2,
+            Duration::from_secs_f32(BALL_MERGE_DURATION),
+            BALL_RADII[ball2.level] * 2.0,
+        ))
+        .insert(DestroyAfter(Timer::from_seconds(
+            BALL_MERGE_DURATION,
+            TimerMode::Once,
+        )))
+        .despawn_descendants();
+
+    ball2.level += 1;
+
+    if ball2.level % 10 == 0 {
+        commands.entity(entity1).insert(Animator::new(Tween::new(
+            BALL_MERGE_EASE_FUNCTION,
+            Duration::from_secs_f32(BALL_MERGE_DURATION),
+            TransformScaleLens {
+                start: trans2.scale,
+                end: Vec3::splat(BALL_RADII[ball2.level] * 2.0),
+            },
+        )));
+    }
+
+    *mesh2 = meshes.balls[ball2.level].clone();
+
+    commands
+        .entity(entity2)
+        .remove::<Animator<Transform>>()
+        .remove::<AssetAnimator<ColorMaterial>>()
+        .insert(Animator::new(Tween::new(
+            BALL_MERGE_EASE_FUNCTION,
+            Duration::from_secs_f32(BALL_MERGE_DURATION),
+            TransformScaleLens {
+                start: trans2.scale,
+                end: Vec3::splat(BALL_RADII[ball2.level] * 2.0), // doubles surface area
+            },
+        )))
+        .insert(AssetAnimator::new(
+            mat2.clone(),
+            Tween::new(
+                BALL_MERGE_EASE_FUNCTION,
+                Duration::from_secs_f32(BALL_MERGE_DURATION),
+                ColorMaterialColorLens {
+                    start: BALL_COLORS[ball2.level - 1],
+                    end: BALL_COLORS[ball2.level],
+                },
+            ),
+        ));
+
+    trans2.translation.z += 1.0;
+
+    if Some(entity1) == cursor_ball.0 {
+        cursor_ball.0 = Some(entity2);
+    }
+
+    if ball2.level % 10 == 0 {
+        let text_id = commands
+            .spawn(Text2dBundle {
+                text: Text::from_section(
+                    format!("{}", ball2.level / 10),
+                    TextStyle {
+                        font: asset_server.load("fonts/VarelaRound-Regular.ttf"),
+                        font_size: *BALL_RADII.last().unwrap() * BALL_TEXT_SCALE,
+                        color: contrasting_text_color(BALL_COLORS[0]),
+                    },
+                )
+                .with_alignment(TextAlignment::CENTER),
+                transform: Transform::from_xyz(0.0, 0.0, 0.5).with_scale(Vec3::splat(
+                    BALL_TEXT_SCALE / *BALL_RADII.last().unwrap(), // TODO: scale when the size of the text does not fit in the ball, e.g. text = "10" or "100"
+                )),
+                ..default()
+            })
+            .id();
+
+        commands.entity(entity2).despawn_descendants();
+        commands.entity(entity2).add_child(text_id);
+    }
+
+    high_score.0 += BigUint::from(2u32).pow(ball2.level as u32 - 1);
+}
+
+fn collision_event_system(
+    commands: Commands,
+    mut ball_count: ResMut<BallCount>,
+    cursor_ball: ResMut<BallMovingTowardsCursor>,
+    high_score: ResMut<HighScore>,
     asset_server: Res<AssetServer>,
     meshes: Res<Meshes>,
     mut query: Query<(
@@ -623,7 +706,7 @@ fn collision_event_system(
 ) {
     for event in collision_event.iter() {
         match event {
-            &CollisionEvent::Started(mut entity1, mut entity2, _) => {
+            &CollisionEvent::Started(entity1, entity2, _) => {
                 let Ok([a, b]) = query.get_many_mut([entity1, entity2]) else {
                     continue;
                 };
@@ -638,101 +721,33 @@ fn collision_event_system(
                     (b.2.translation.truncate(), b.4.velocity),
                 ];
 
-                // if entity1 is moving towards entity2 faster than entity2 is moving towards entity1
-                // then consume entity1 and grow entity2, else vice versa
-                let (mut ball2, mut mesh2, mut trans2, mat2, _) =
-                    if vel1.dot(pos2 - pos1) > vel2.dot(pos1 - pos2) {
-                        (entity1, entity2) = (entity2, entity1); // the ol switcheroo
-                        a
-                    } else {
-                        b
-                    };
-
-                commands
-                    .entity(entity1)
-                    .remove::<Collider>()
-                    .remove::<RigidBody>()
-                    .insert(LerpDistance::new(
-                        entity2,
-                        Duration::from_secs_f32(BALL_MERGE_DURATION),
-                        BALL_RADII[ball2.level % BALL_RADII.len()] * 2.0,
-                    ))
-                    .insert(DestroyAfter(Timer::from_seconds(
-                        BALL_MERGE_DURATION,
-                        TimerMode::Once,
-                    )))
-                    .despawn_descendants();
-
                 ball_count.0 -= 1;
 
-                ball2.level += 1;
-
-                if ball2.level % BALL_RADII.len() == 0 {
-                    commands.entity(entity1).insert(Animator::new(Tween::new(
-                        BALL_MERGE_EASE_FUNCTION,
-                        Duration::from_secs_f32(BALL_MERGE_DURATION),
-                        TransformScaleLens {
-                            start: trans2.scale,
-                            end: Vec3::splat(BALL_RADII[ball2.level % BALL_RADII.len()] * 2.0),
-                        },
-                    )));
-                }
-
-                *mesh2 = meshes.balls[ball2.level % BALL_RADII.len()].clone();
-
-                commands
-                    .entity(entity2)
-                    .remove::<Animator<Transform>>()
-                    .remove::<AssetAnimator<ColorMaterial>>()
-                    .insert(Animator::new(Tween::new(
-                        BALL_MERGE_EASE_FUNCTION,
-                        Duration::from_secs_f32(BALL_MERGE_DURATION),
-                        TransformScaleLens {
-                            start: trans2.scale,
-                            end: Vec3::splat(BALL_RADII[ball2.level % BALL_RADII.len()] * 2.0), // doubles surface area
-                        },
-                    )))
-                    .insert(AssetAnimator::new(
-                        mat2.clone(),
-                        Tween::new(
-                            BALL_MERGE_EASE_FUNCTION,
-                            Duration::from_secs_f32(BALL_MERGE_DURATION),
-                            ColorMaterialColorLens {
-                                start: BALL_COLORS[ball2.level - 1],
-                                end: BALL_COLORS[ball2.level],
-                            },
-                        ),
-                    ));
-
-                trans2.translation.z += 1.0;
-
-                if Some(entity1) == cursor_ball.0 {
-                    cursor_ball.0 = Some(entity2);
-                }
-
-                if ball2.level % BALL_RADII.len() == 0 {
-                    let text_id = commands
-                        .spawn(Text2dBundle {
-                            text: Text::from_section(
-                                format!("{}", ball2.level / BALL_RADII.len()),
-                                TextStyle {
-                                    font: asset_server.load("fonts/VarelaRound-Regular.ttf"),
-                                    font_size: *BALL_RADII.last().unwrap(),
-                                    color: contrast_text_color(BALL_COLORS[0]),
-                                },
-                            )
-                            .with_alignment(TextAlignment::CENTER),
-                            transform: Transform::from_xyz(0.0, 0.0, 0.5)
-                                .with_scale(Vec3::splat(1.0 / *BALL_RADII.last().unwrap())),
-                            ..default()
-                        })
-                        .id();
-
-                    commands.entity(entity2).despawn_descendants();
-                    commands.entity(entity2).add_child(text_id);
-                }
-
-                high_score.0 += BigUint::from(2u32).pow(ball2.level as u32 - 1);
+                // if entity1 is moving towards entity2 faster than entity2 is moving towards entity1
+                // then consume entity1 and grow entity2, else vice versa
+                if vel1.dot(pos2 - pos1) > vel2.dot(pos1 - pos2) {
+                    merge_balls(
+                        commands,
+                        cursor_ball,
+                        high_score,
+                        asset_server,
+                        meshes,
+                        entity2,
+                        entity1,
+                        (a.0, a.1, a.2, a.3), // the ol switcheroo
+                    );
+                } else {
+                    merge_balls(
+                        commands,
+                        cursor_ball,
+                        high_score,
+                        asset_server,
+                        meshes,
+                        entity1,
+                        entity2,
+                        (b.0, b.1, b.2, b.3),
+                    );
+                };
 
                 return;
             }
@@ -778,9 +793,10 @@ fn update_destroy_after_system(
     mut commands: Commands,
     time: Res<Time>,
     mut query: Query<(Entity, &mut DestroyAfter)>,
+    quit_event: EventReader<AppExit>,
 ) {
     for (entity, mut destroy_after) in query.iter_mut() {
-        if destroy_after.0.tick(time.delta()).finished() {
+        if destroy_after.0.tick(time.delta()).finished() || !quit_event.is_empty() {
             commands.entity(entity).despawn_recursive();
         }
     }
@@ -815,9 +831,31 @@ fn update_move_towards_cursor_system(
     }
 }
 
-pub struct GamePlugin;
+// bevy supports world saving, this is simply a (temporary) solution
+fn save_game_on_exit_event_system(
+    mut pkv: ResMut<PkvStore>,
+    high_score: Res<HighScore>,
+    query: Query<(&Transform, &Ball)>,
+    event_reader: EventReader<AppExit>,
+) {
+    if event_reader.is_empty() {
+        return;
+    }
 
-impl Plugin for GamePlugin {
+    let balls = query
+        .iter()
+        .map(|(trans, ball)| (trans.translation.truncate(), ball.level))
+        .collect::<Vec<_>>();
+
+    pkv.set("saved", &true).unwrap();
+    pkv.set("balls", &balls).unwrap();
+    pkv.set("high_score", &high_score.0.to_u32_digits())
+        .unwrap();
+}
+
+pub struct BallGamePlugin;
+
+impl Plugin for BallGamePlugin {
     fn build(&self, app: &mut App) {
         fn panic_plugin_not_installed<P: Plugin>(app: &mut App) {
             if !app.is_plugin_added::<P>() {
@@ -839,9 +877,12 @@ impl Plugin for GamePlugin {
             .init_resource::<Meshes>()
             .init_resource::<WorldSpaceCursor>()
             .init_resource::<BallMovingTowardsCursor>()
-            .add_startup_system(setup)
+            .insert_resource(PkvStore::new("IvoteSligte", "ball_game"))
+            .add_startup_system(setup_general)
+            .add_startup_system(setup_ui)
             .add_startup_system(setup_meshes)
             .add_startup_system(setup_cursor_icon.after(setup_meshes))
+            .add_startup_system(setup_load_game.after(setup_meshes))
             .add_system(window_resize_event)
             .add_system(scroll_event_system)
             .add_system(update_observed_velocity_system)
@@ -852,7 +893,11 @@ impl Plugin for GamePlugin {
             .add_system(update_destroy_after_system)
             .add_system(update_world_space_cursor_system)
             .add_system(cursor_input_system.after(update_world_space_cursor_system))
-            .add_system(update_move_towards_cursor_system.after(update_world_space_cursor_system));
+            .add_system(update_move_towards_cursor_system.after(update_world_space_cursor_system))
+            .add_system_to_stage(
+                CoreStage::PostUpdate,
+                save_game_on_exit_event_system.after(bevy::window::exit_on_all_closed),
+            );
     }
 }
 
@@ -871,7 +916,7 @@ fn main() {
         ))
         .add_plugin(TweeningPlugin)
         // .add_plugin(RapierDebugRenderPlugin::default()) // DEBUG
-        .add_plugin(GamePlugin)
+        .add_plugin(BallGamePlugin)
         .run();
 }
 
