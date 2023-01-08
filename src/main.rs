@@ -440,13 +440,13 @@ fn setup_load_game(
                         "1",
                         TextStyle {
                             font: asset_server.load("fonts/VarelaRound-Regular.ttf"),
-                            font_size: 50.0 * BALL_TEXT_SCALE,
+                            font_size: 500.0 * BALL_TEXT_SCALE,
                             color: contrasting_text_color(BALL_COLORS[0]),
                         },
                     )
                     .with_alignment(TextAlignment::CENTER),
                     transform: Transform::from_xyz(0.0, 0.0, 0.5).with_scale(Vec3::splat(
-                        BALL_TEXT_SCALE / 50.0, // TODO: scale when the size of the text does not fit in the ball, e.g. text = "10" or "100"
+                        BALL_TEXT_SCALE / 500.0, // TODO: scale when the size of the text does not fit in the ball, e.g. text = "10" or "100"
                     )),
                     ..default()
                 })
@@ -727,13 +727,13 @@ fn merge_balls(
                     "1",
                     TextStyle {
                         font: asset_server.load("fonts/VarelaRound-Regular.ttf"),
-                        font_size: 50.0 * BALL_TEXT_SCALE,
+                        font_size: 500.0 * BALL_TEXT_SCALE,
                         color: contrasting_text_color(BALL_COLORS[0]),
                     },
                 )
                 .with_alignment(TextAlignment::CENTER),
                 transform: Transform::from_xyz(0.0, 0.0, 0.5).with_scale(Vec3::splat(
-                    BALL_TEXT_SCALE / 50.0, // TODO: scale when the size of the text does not fit in the ball, e.g. text = "10" or "100"
+                    BALL_TEXT_SCALE / 500.0, // TODO: scale when the size of the text does not fit in the ball, e.g. text = "10" or "100"
                 )),
                 ..default()
             })
