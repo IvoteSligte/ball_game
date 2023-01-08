@@ -808,6 +808,8 @@ fn collision_event_system(
                     commands.entity(entity1).despawn_recursive();
                     commands.entity(entity2).despawn_recursive();
 
+                    ball_count.0 -= 2;
+
                     return;
                 }
 
@@ -815,8 +817,6 @@ fn collision_event_system(
                     (a.2.translation.truncate(), a.4.velocity),
                     (b.2.translation.truncate(), b.4.velocity),
                 ];
-
-                ball_count.0 -= 1;
 
                 // if entity1 is moving towards entity2 faster than entity2 is moving towards entity1
                 // then consume entity1 and grow entity2, else vice versa
@@ -843,6 +843,8 @@ fn collision_event_system(
                         (b.0, b.1, b.2, b.3),
                     );
                 };
+
+                ball_count.0 -= 1;
 
                 return;
             }
