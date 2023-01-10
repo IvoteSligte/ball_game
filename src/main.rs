@@ -18,6 +18,7 @@ use bevy::{
     render::camera::{RenderTarget, ScalingMode},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
     tasks::IoTaskPool,
+    time::Stopwatch,
     window::{PresentMode, WindowResized},
 };
 use bevy_rapier2d::prelude::*;
@@ -27,7 +28,7 @@ use bevy_tweening::{
 };
 use num_bigint::BigUint;
 
-const WALL_THICKNESS: f32 = 1000.0;
+const WALL_THICKNESS: f32 = 1e5;
 
 const BALL_MIN_VERTICES: usize = 32;
 
@@ -56,7 +57,7 @@ const BALL_COLORS: [Color; 22] = [
     Color::hsl(9.5 * 36.0, 1.0, 0.5),
     // pure white
     Color::hsl(0.0, 1.0, 1.0),
-    // pure black
+    // pure black (black hole)
     Color::hsl(0.0, 1.0, 0.0),
 ];
 
@@ -86,19 +87,25 @@ const BALL_RADII: [f32; 22] = [
     BALL_RADIUS * 22.627416998,
     //
     BALL_RADIUS * 32.0,
-    //
-    BALL_RADIUS * 1.5,
+    // black hole
+    BALL_RADIUS * 5.0,
 ];
+
+// restitution
+const BALL_BOUNCINESS: f32 = 0.7;
 
 const BALL_MERGE_SECS: f32 = 0.4;
 const BALL_MERGE_EASE_FUNCTION: EaseFunction = EaseFunction::QuadraticInOut;
 
 const BALL_TEXT_SCALE: f32 = 1.0;
 
-const BLACK_HOLE_SUCK_SECS: f32 = 0.5;
+const BLACK_HOLE_SUCK_FORCE: f32 = 1e7;
+
+const EXPLOSION_FORCE_MULTIPLIER: f32 = 1e5;
+const EXPLOSION_FORCE_BIAS: f32 = 1000.0;
 
 const PLAY_AREA_WIDTH: f32 = 600.0;
-const PLAY_AREA_HEIGHT: f32 = 100.0 * PLAY_AREA_WIDTH;
+const PLAY_AREA_HEIGHT: f32 = 25.0 * PLAY_AREA_WIDTH;
 
 const PIXELS_PER_LINE_SCROLLED: f32 = 20.0;
 
@@ -171,9 +178,6 @@ struct MainCamera;
 struct BlackHole;
 
 #[derive(Component)]
-struct IsIntersectingBlackHole;
-
-#[derive(Component)]
 struct TextAlphaLens {
     start: f32,
     end: f32,
@@ -210,9 +214,6 @@ struct HighScoreText;
 struct BallCountText;
 
 #[derive(Default, Resource)]
-struct BallCount(usize);
-
-#[derive(Default, Resource)]
 struct Meshes {
     balls: Vec<Mesh2dHandle>,
 }
@@ -221,7 +222,10 @@ struct Meshes {
 struct WorldSpaceCursor(Option<Vec2>);
 
 #[derive(Default, Resource)]
-struct BallMovingTowardsCursor(Option<Entity>);
+struct RightMouseActions {
+    dragging_ball: Option<Entity>,
+    explosion_stopwatch: Option<Stopwatch>,
+}
 
 #[derive(Default, Resource)]
 struct HighScore(BigUint);
@@ -380,7 +384,6 @@ fn setup_load_game(
     mut commands: Commands,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut high_score: ResMut<HighScore>,
-    mut ball_count: ResMut<BallCount>,
     asset_server: Res<AssetServer>,
     meshes: Res<Meshes>,
 ) {
@@ -398,7 +401,6 @@ fn setup_load_game(
 
     high_score.0 = BigUint::from_slice(&high_score_raw);
 
-    ball_count.0 = balls_raw.len();
     balls_raw.into_iter().for_each(|(position, level)| {
         let material_handle = materials.add(ColorMaterial::from(BALL_COLORS[level]));
 
@@ -415,6 +417,7 @@ fn setup_load_game(
             })
             .insert(RigidBody::Dynamic)
             .insert(Collider::ball(0.5))
+            .insert(Restitution::new(BALL_BOUNCINESS))
             .insert(ActiveEvents::COLLISION_EVENTS)
             .insert(TransformBundle::from_transform(
                 Transform::from_xyz(position.x, position.y, level as f32)
@@ -510,11 +513,10 @@ fn contrasting_text_color(background: Color) -> Color {
     Color::hsla(0.0, 1.0, 0.0, (1.0 - relative_luminance(background)) / 1.5)
 }
 
-fn cursor_input_system(
+fn spawn_or_drag_ball_system(
     mut commands: Commands,
-    mut ball_count: ResMut<BallCount>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut cursor_ball: ResMut<BallMovingTowardsCursor>,
+    mut right_mouse_actions: ResMut<RightMouseActions>,
     meshes: Res<Meshes>,
     mouse_button_input: Res<Input<MouseButton>>,
     cursor_position: Res<WorldSpaceCursor>,
@@ -526,20 +528,20 @@ fn cursor_input_system(
         return;
     };
 
-    query_cursor_icon.single_mut().translation = position.extend(0.0);
+    query_cursor_icon.single_mut().translation = position.extend(100.0);
 
     let mut cursor_point_intersection = None;
-    rapier_context.intersections_with_point(position, QueryFilter::default(), |e| {
-        cursor_point_intersection = Some(e);
+    rapier_context.intersections_with_point(position, QueryFilter::default(), |entity| {
+        cursor_point_intersection = Some(entity);
         false
     });
 
     if let Some(intersecting_entity) = cursor_point_intersection {
-        if mouse_button_input.pressed(MouseButton::Right)
+        if mouse_button_input.just_pressed(MouseButton::Right)
             && query_balls.contains(intersecting_entity)
-            && cursor_ball.0.is_none()
+            && right_mouse_actions.dragging_ball.is_none()
         {
-            cursor_ball.0 = Some(intersecting_entity);
+            right_mouse_actions.dragging_ball = Some(intersecting_entity);
         }
 
         return;
@@ -571,13 +573,12 @@ fn cursor_input_system(
             })
             .insert(RigidBody::Dynamic)
             .insert(Collider::ball(0.5))
+            .insert(Restitution::new(BALL_BOUNCINESS))
             .insert(ActiveEvents::COLLISION_EVENTS)
             .insert(TransformBundle::from_transform(
                 Transform::from_xyz(position.x, position.y, 0.0)
                     .with_scale(Vec3::splat(BALL_RADII[0] * 2.0)),
             ));
-
-        ball_count.0 += 1;
     }
 }
 
@@ -645,9 +646,31 @@ fn scroll_event_system(
     }
 }
 
+fn spawn_black_hole(
+    commands: &mut Commands,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    meshes: &Res<Meshes>,
+    position: Vec2,
+) {
+    commands
+        .spawn(MaterialMesh2dBundle {
+            mesh: meshes.balls.last().unwrap().clone(),
+            material: materials.add(ColorMaterial::from(*BALL_COLORS.last().unwrap())),
+            ..default()
+        })
+        .insert(Collider::ball(0.5))
+        .insert(Sensor)
+        .insert(ActiveEvents::COLLISION_EVENTS)
+        .insert(TransformBundle::from_transform(
+            Transform::from_xyz(position.x, position.y, BALL_RADII.len() as f32)
+                .with_scale(Vec3::splat(*BALL_RADII.last().unwrap() * 2.0)),
+        ))
+        .insert(BlackHole);
+}
+
 fn merge_balls(
     mut commands: Commands,
-    mut cursor_ball: ResMut<BallMovingTowardsCursor>,
+    mut right_mouse_actions: ResMut<RightMouseActions>,
     mut high_score: ResMut<HighScore>,
     asset_server: Res<AssetServer>,
     meshes: Res<Meshes>,
@@ -716,8 +739,8 @@ fn merge_balls(
 
     trans2.translation.z += 1.0;
 
-    if Some(entity1) == cursor_ball.0 {
-        cursor_ball.0 = Some(entity2);
+    if Some(entity1) == right_mouse_actions.dragging_ball {
+        right_mouse_actions.dragging_ball = Some(entity2);
     }
 
     if ball2.level == 10 {
@@ -739,39 +762,15 @@ fn merge_balls(
             })
             .id();
 
-        commands.entity(entity2).despawn_descendants();
         commands.entity(entity2).add_child(text_entity);
     }
 
     high_score.0 += BigUint::from(2u32).pow(ball2.level as u32 - 1);
 }
 
-fn spawn_black_hole(
-    commands: &mut Commands,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    meshes: &Res<Meshes>,
-    position: Vec2,
-) {
-    commands
-        .spawn(MaterialMesh2dBundle {
-            mesh: meshes.balls.last().unwrap().clone(),
-            material: materials.add(ColorMaterial::from(*BALL_COLORS.last().unwrap())),
-            ..default()
-        })
-        .insert(Collider::ball(0.5))
-        .insert(Sensor)
-        .insert(ActiveEvents::COLLISION_EVENTS)
-        .insert(TransformBundle::from_transform(
-            Transform::from_xyz(position.x, position.y, BALL_RADII.len() as f32)
-                .with_scale(Vec3::splat(*BALL_RADII.last().unwrap() * 2.0)),
-        ))
-        .insert(BlackHole);
-}
-
 fn collision_event_system(
     mut commands: Commands,
-    mut ball_count: ResMut<BallCount>,
-    cursor_ball: ResMut<BallMovingTowardsCursor>,
+    right_mouse_actions: ResMut<RightMouseActions>,
     high_score: ResMut<HighScore>,
     materials: ResMut<Assets<ColorMaterial>>,
     asset_server: Res<AssetServer>,
@@ -808,8 +807,6 @@ fn collision_event_system(
                     commands.entity(entity1).despawn_recursive();
                     commands.entity(entity2).despawn_recursive();
 
-                    ball_count.0 -= 2;
-
                     return;
                 }
 
@@ -823,7 +820,7 @@ fn collision_event_system(
                 if vel1.dot(pos2 - pos1) > vel2.dot(pos1 - pos2) {
                     merge_balls(
                         commands,
-                        cursor_ball,
+                        right_mouse_actions,
                         high_score,
                         asset_server,
                         meshes,
@@ -834,7 +831,7 @@ fn collision_event_system(
                 } else {
                     merge_balls(
                         commands,
-                        cursor_ball,
+                        right_mouse_actions,
                         high_score,
                         asset_server,
                         meshes,
@@ -844,8 +841,6 @@ fn collision_event_system(
                     );
                 };
 
-                ball_count.0 -= 1;
-
                 return;
             }
             _ => (),
@@ -853,20 +848,77 @@ fn collision_event_system(
     }
 }
 
-fn ball_count_text_update_system(
-    ball_count: Res<BallCount>,
-    mut query: Query<&mut Text, With<BallCountText>>,
+fn update_ball_count_text_system(
+    mut query_text: Query<&mut Text, With<BallCountText>>,
+    query_balls: Query<With<Ball>>,
 ) {
-    let mut text = query.single_mut();
-    text.sections[0].value = ball_count.0.to_string();
+    let mut text = query_text.single_mut();
+    let ball_count = query_balls.iter().count();
+    text.sections[0].value = ball_count.to_string();
 }
 
-fn high_score_text_update_system(
+fn update_high_score_text_system(
     high_score: Res<HighScore>,
     mut query: Query<&mut Text, With<HighScoreText>>,
 ) {
     let mut text = query.single_mut();
     text.sections[0].value = high_score.0.to_string();
+}
+
+fn update_explosion_click_system(
+    mut right_mouse_actions: ResMut<RightMouseActions>,
+    mut rapier_context: ResMut<RapierContext>,
+    mouse_button_input: Res<Input<MouseButton>>,
+    cursor_position: Res<WorldSpaceCursor>,
+    time: Res<Time>,
+    query_balls: Query<(&Transform, &RapierRigidBodyHandle, &Ball)>,
+) {
+    if right_mouse_actions.dragging_ball.is_some() {
+        return;
+    }
+
+    if mouse_button_input.just_pressed(MouseButton::Right) {
+        right_mouse_actions.explosion_stopwatch = Some(Stopwatch::new());
+        return;
+    }
+
+    let Some(explosion_stopwatch) = right_mouse_actions.explosion_stopwatch.as_mut() else {
+        return;
+    };
+
+    explosion_stopwatch.tick(time.delta());
+    let elapsed_secs = explosion_stopwatch.elapsed_secs();
+
+    if mouse_button_input.just_released(MouseButton::Right) {
+        let Some(cursor_pos) = cursor_position.0 else {
+            return;
+        };
+
+        for (transform, rapier_handle, ball) in query_balls.iter() {
+            let position = transform.translation.truncate();
+            let distance = position.distance(cursor_pos) - BALL_RADII[ball.level];
+
+            if distance <= 0.0 {
+                continue;
+            }
+
+            rapier_context
+                .bodies
+                .get_mut(rapier_handle.0)
+                .unwrap()
+                .apply_impulse(
+                    {
+                        // linearly scales with distance
+                        let acceleration =
+                            (position - cursor_pos) / (distance.powi(2) + EXPLOSION_FORCE_BIAS);
+
+                        acceleration * EXPLOSION_FORCE_MULTIPLIER * elapsed_secs
+                    }
+                    .into(),
+                    true,
+                );
+        }
+    }
 }
 
 fn update_lerp_distance_system(
@@ -908,12 +960,12 @@ fn update_observed_velocity_system(mut query: Query<(&mut ObservedVelocity, &Tra
 
 fn update_move_towards_cursor_system(
     mut rapier_context: ResMut<RapierContext>,
-    mut cursor_ball: ResMut<BallMovingTowardsCursor>,
+    mut right_mouse_actions: ResMut<RightMouseActions>,
     cursor_position: Res<WorldSpaceCursor>,
     mouse_button_input: Res<Input<MouseButton>>,
     query: Query<(&RapierRigidBodyHandle, &Transform), With<Ball>>,
 ) {
-    let Some((cursor_position, following_entity)) = cursor_position.0.zip(cursor_ball.0) else { return; };
+    let Some((cursor_position, following_entity)) = cursor_position.0.zip(right_mouse_actions.dragging_ball) else { return; };
 
     if mouse_button_input.pressed(MouseButton::Right) {
         if let Ok((handle, transform)) = query.get(following_entity) {
@@ -924,68 +976,44 @@ fn update_move_towards_cursor_system(
             );
         }
     } else {
-        cursor_ball.0 = None;
+        right_mouse_actions.dragging_ball = None;
     }
 }
 
 fn update_black_hole_interaction_system(
     mut commands: Commands,
     mut rapier_context: ResMut<RapierContext>,
-    mut cursor_ball: ResMut<BallMovingTowardsCursor>,
+    mut right_mouse_actions: ResMut<RightMouseActions>,
     time: Res<Time>,
-    mut query_balls: Query<
-        (
-            Entity,
-            &RapierRigidBodyHandle,
-            &Transform,
-            Option<&IsIntersectingBlackHole>,
-        ),
-        With<Ball>,
-    >,
+    query_balls: Query<(Entity, &RapierRigidBodyHandle, &Transform), With<Ball>>,
     query_black_holes: Query<(Entity, &Transform), With<BlackHole>>,
 ) {
     for (hole_entity, hole_transform) in query_black_holes.iter() {
         let hole_position = hole_transform.translation.truncate();
 
-        for (ball_entity, &handle, ball_transform, prev_intersect) in query_balls.iter_mut() {
-            let rigid_body = rapier_context.bodies.get_mut(handle.0).unwrap();
+        for (ball_entity, &handle, ball_transform) in query_balls.iter() {
+            let position = ball_transform.translation.truncate();
+            let distance = position.distance(hole_position);
 
-            let ball_position = ball_transform.translation.truncate();
+            rapier_context
+                .bodies
+                .get_mut(handle.0)
+                .unwrap()
+                .apply_impulse(
+                    {
+                        // scales linearly with distance
+                        let acceleration = (hole_position - position) / (distance.powi(2) + 1.0);
+                        acceleration * BLACK_HOLE_SUCK_FORCE * time.delta_seconds()
+                    }
+                    .into(),
+                    true,
+                );
 
-            let distance = ball_position.distance(hole_position);
-            let Some(direction) = (ball_position - hole_position).try_normalize() else { continue; };
+            if rapier_context.intersection_pair(hole_entity, ball_entity) == Some(true) {
+                commands.entity(ball_entity).despawn_recursive();
 
-            let impulse = 1e5 * direction / (distance * distance + 1e-10) * time.delta_seconds();
-
-            rigid_body.apply_impulse(impulse.into(), true);
-
-            let intersecting =
-                rapier_context.intersection_pair(hole_entity, ball_entity) == Some(true);
-            
-            if prev_intersect.is_none() && intersecting {
-                commands
-                    .entity(ball_entity)
-                    .insert(Animator::new(Tween::new(
-                        BALL_MERGE_EASE_FUNCTION,
-                        Duration::from_secs_f32(BLACK_HOLE_SUCK_SECS),
-                        TransformScaleLens {
-                            start: ball_transform.scale,
-                            end: Vec3::splat(1e-10),
-                        },
-                    )))
-                    .insert(IsIntersectingBlackHole)
-                    .insert(LerpTowards::new(
-                        hole_entity,
-                        Duration::from_secs_f32(BLACK_HOLE_SUCK_SECS),
-                        distance,
-                    ))
-                    .insert(DestroyAfter(Timer::from_seconds(
-                        BLACK_HOLE_SUCK_SECS,
-                        TimerMode::Once,
-                    )));
-
-                if Some(ball_entity) == cursor_ball.0 {
-                    cursor_ball.0 = None;
+                if Some(ball_entity) == right_mouse_actions.dragging_ball {
+                    right_mouse_actions.dragging_ball = None;
                 }
             }
         }
@@ -1052,11 +1080,10 @@ impl Plugin for BallGamePlugin {
         panic_plugin_not_installed::<RapierPhysicsPlugin>(app);
         panic_plugin_not_installed::<TweeningPlugin>(app);
 
-        app.init_resource::<BallCount>()
-            .init_resource::<HighScore>()
+        app.init_resource::<HighScore>()
             .init_resource::<Meshes>()
             .init_resource::<WorldSpaceCursor>()
-            .init_resource::<BallMovingTowardsCursor>()
+            .init_resource::<RightMouseActions>()
             .add_startup_system(setup_general)
             .add_startup_system(setup_ui)
             .add_startup_system(setup_meshes)
@@ -1067,13 +1094,14 @@ impl Plugin for BallGamePlugin {
             .add_system(keyboard_input_system)
             .add_system(update_observed_velocity_system)
             .add_system(collision_event_system.after(update_observed_velocity_system))
-            .add_system(ball_count_text_update_system)
-            .add_system(high_score_text_update_system)
+            .add_system(update_black_hole_interaction_system.after(collision_event_system))
+            .add_system(update_explosion_click_system)
+            .add_system(update_ball_count_text_system)
+            .add_system(update_high_score_text_system)
             .add_system(update_lerp_distance_system)
             .add_system(update_destroy_after_system)
             .add_system(update_world_space_cursor_system)
-            .add_system(update_black_hole_interaction_system)
-            .add_system(cursor_input_system.after(update_world_space_cursor_system))
+            .add_system(spawn_or_drag_ball_system.after(update_world_space_cursor_system))
             .add_system(update_move_towards_cursor_system.after(update_world_space_cursor_system))
             .add_system_to_stage(
                 CoreStage::PostUpdate,
@@ -1100,8 +1128,6 @@ fn main() {
         .add_plugin(BallGamePlugin)
         .run();
 }
-
-// TODO: save highscores ?
 
 // KNOWN BUGS:
 // possible cause: closed window while running app
