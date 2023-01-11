@@ -763,6 +763,8 @@ fn merge_balls(
             .id();
 
         commands.entity(entity2).add_child(text_entity);
+    } else if ball2.level == 20 {
+        commands.entity(entity2).despawn_descendants();
     }
 
     high_score.0 += BigUint::from(2u32).pow(ball2.level as u32 - 1);
