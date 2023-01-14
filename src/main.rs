@@ -101,6 +101,12 @@ const BALL_TEXT_SCALE: f32 = 1.0;
 
 const BLACK_HOLE_SUCK_FORCE: f32 = 1e7;
 
+const CURSOR_RADIUS: f32 = 16.0;
+const CURSOR_COLOR_MIN: Color = Color::rgba(1.0, 1.0, 1.0, 0.2);
+const CURSOR_COLOR_MAX: Color = Color::rgba(1.0, 1.0, 1.0, 1.0);
+const CURSOR_GROWTH_MULTIPLIER: f32 = 0.5;
+const CURSOR_COLOR_CHANGE_MULTIPLIER: f32 = 0.25;
+
 const EXPLOSION_FORCE_MULTIPLIER: f32 = 1e5;
 const EXPLOSION_FORCE_BIAS: f32 = 1000.0;
 
@@ -372,9 +378,9 @@ fn setup_cursor_icon(
             mesh: meshes.balls[0].clone(),
             material: materials.add(ColorMaterial {
                 texture: Some(asset_server.load("textures/cursor.png")),
-                color: Color::hsla(0.0, 1.0, 1.0, 0.2),
+                color: CURSOR_COLOR_MIN,
             }),
-            transform: Transform::from_scale(Vec3::splat(BALL_RADII[0] * 2.0)),
+            transform: Transform::from_scale(Vec3::splat(CURSOR_RADIUS * 2.0)),
             ..default()
         })
         .insert(CursorIcon);
@@ -870,9 +876,14 @@ fn update_high_score_text_system(
 fn update_explosion_click_system(
     mut right_mouse_actions: ResMut<RightMouseActions>,
     mut rapier_context: ResMut<RapierContext>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     mouse_button_input: Res<Input<MouseButton>>,
     cursor_position: Res<WorldSpaceCursor>,
     time: Res<Time>,
+    mut cursor_icon_query: Query<
+        (&mut Transform, &Handle<ColorMaterial>),
+        (With<CursorIcon>, Without<Ball>),
+    >,
     query_balls: Query<(&Transform, &RapierRigidBodyHandle, &Ball)>,
 ) {
     if right_mouse_actions.dragging_ball.is_some() {
@@ -891,7 +902,23 @@ fn update_explosion_click_system(
     explosion_stopwatch.tick(time.delta());
     let elapsed_secs = explosion_stopwatch.elapsed_secs();
 
+    let (mut cursor_transform, cursor_mat_handle) = cursor_icon_query.single_mut();
+    
+    let alpha = elapsed_secs * CURSOR_GROWTH_MULTIPLIER;
+    cursor_transform.scale = Vec3::splat(CURSOR_RADIUS * 2.0) * (alpha + 1.0);
+
+    let cursor_material = materials.get_mut(cursor_mat_handle).unwrap();
+    let beta = elapsed_secs * CURSOR_COLOR_CHANGE_MULTIPLIER;
+    cursor_material.color = Color::from(
+        Vec4::from(CURSOR_COLOR_MIN) * (1.0 - beta).max(0.0)
+            + Vec4::from(CURSOR_COLOR_MAX) * beta.min(1.0),
+    );
+
     if mouse_button_input.just_released(MouseButton::Right) {
+        right_mouse_actions.explosion_stopwatch = None;
+        cursor_transform.scale = Vec3::splat(CURSOR_RADIUS * 2.0);
+        cursor_material.color = CURSOR_COLOR_MIN;
+
         let Some(cursor_pos) = cursor_position.0 else {
             return;
         };
